@@ -6,8 +6,16 @@ Self-executing agent. Static frontend + long-running agent server.
 
 ```
 apps/
-  web/     React + Vite + TypeScript + Tailwind v4 + shadcn/ui (static, deploys to Cloudflare Pages)
-  server/  Hono on Node (@hono/node-server), long-running service (deploys to Railway)
+  web/       React + Vite + TypeScript + Tailwind v4 + shadcn/ui (static, deploys to Cloudflare Pages)
+  server/    Hono on Node (@hono/node-server), long-running service (deploys to Railway)
+packages/
+  shared/    @autonoma/shared — types shared between web and server (e.g. AgentEvent).
+             Type-only, no build step; import type erases it at compile time.
+  ui/        @autonoma/ui — shared shadcn/ui components (Button, Textarea, theme CSS),
+             for reuse if more apps get added to this monorepo later. Follows shadcn's
+             official monorepo pattern: components live here, apps import via
+             "@autonoma/ui/components/*"; `pnpm dlx shadcn@latest add <x>` from an app
+             writes new components into this package (see apps/web/components.json).
 ```
 
 Managed as a pnpm workspace + Turborepo.
@@ -40,7 +48,7 @@ Manual/CLI alternative: `cd apps/web && pnpm build && npx wrangler pages deploy`
 2. Railway picks up `railway.json` at the repo root, which builds
    `apps/server/Dockerfile` (a multi-stage build using `turbo prune` so
    only the server's dependencies are installed).
-3. Set env vars: `DATABASE_URL`, `ANTHROPIC_API_KEY`, `E2B_API_KEY`, `CORS_ORIGIN`
+3. Set env vars: `DATABASE_URL`, `OPENROUTER_API_KEY`, `E2B_API_KEY`, `CORS_ORIGIN`
    (the deployed frontend origin). Railway sets `PORT` automatically.
 
 ### Database — Neon
@@ -51,6 +59,15 @@ Create a Postgres project at Neon, copy the connection string into
 ### Sandbox — e2b
 
 Create an e2b API key, set it as `E2B_API_KEY` on the server.
+
+### LLM — OpenRouter
+
+The agent loop calls the LLM through [OpenRouter](https://openrouter.ai) (the
+`openai` SDK pointed at OpenRouter's base URL), not the Anthropic API
+directly. Set `OPENROUTER_API_KEY`. The model is `OPENROUTER_MODEL`
+(default `deepseek/deepseek-v4-pro` — see `apps/server/src/agent/loop.ts`);
+if a model gets rate-limited or restricted on your OpenRouter account, swap
+it via the env var without touching code.
 
 ## Notes
 

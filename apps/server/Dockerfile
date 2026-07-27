@@ -25,4 +25,4 @@ ENV NODE_ENV=production
 COPY --from=builder /app .
 WORKDIR /app/apps/server
 EXPOSE 8787
-CMD ["node", "dist/index.js"]
+CMD ["node", "--env-file-if-exists=.env", "dist/index.js"]

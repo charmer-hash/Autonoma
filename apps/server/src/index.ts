@@ -1,7 +1,9 @@
 import { serve } from '@hono/node-server'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
-import { streamText } from 'hono/streaming'
+import { streamSSE } from 'hono/streaming'
+import { Sandbox } from 'e2b'
+import { runAgentLoop } from './agent/loop.js'
 
 const app = new Hono()
 
@@ -14,14 +16,30 @@ app.use(
 
 app.get('/health', (c) => c.json({ ok: true }))
 
-// Placeholder streaming endpoint — wire this up to the real agent loop.
-app.get('/api/agent/stream', (c) => {
-  return streamText(c, async (stream) => {
-    for (const chunk of ['Hello', ' from', ' the', ' agent', ' server.']) {
-      await stream.write(chunk)
-      await stream.sleep(200)
-    }
-  })
+app.post('/api/agent/run', async (c) => {
+  const body = await c.req.json<{ task?: string }>().catch(() => ({}) as { task?: string })
+  const task = body.task?.trim()
+  if (!task) {
+    return c.json({ error: 'Missing "task" in request body.' }, 400)
+  }
+
+  return streamSSE(
+    c,
+    async (stream) => {
+      const sandbox = await Sandbox.create()
+      try {
+        for await (const event of runAgentLoop(task, sandbox)) {
+          await stream.writeSSE({ event: event.type, data: JSON.stringify(event) })
+        }
+      } finally {
+        await sandbox.kill()
+      }
+    },
+    // hono/streaming sends its own `event: error` with `data: <message>` after this runs.
+    async (error) => {
+      console.error(error)
+    },
+  )
 })
 
 const port = Number(process.env.PORT ?? 8787)
