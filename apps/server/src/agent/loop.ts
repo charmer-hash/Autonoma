@@ -22,18 +22,34 @@ const SYSTEM_PROMPT = `你是一个通用型 Agent，能够做调研、制定计
 
 按步骤推进：如果任务涉及真实世界的事实，先调研再行动。完成后用一段简短的文字总结你做了什么，不要再调用任何工具。`
 
-export async function* runAgentLoop(task: string, sandbox: Sandbox): AsyncGenerator<AgentEvent> {
+export function createInitialMessages(): OpenAI.Chat.ChatCompletionMessageParam[] {
+  return [{ role: 'system', content: SYSTEM_PROMPT }]
+}
+
+// `messages` is the session's full history (mutated in place — every push
+// here is visible to the caller, which is how a session remembers past
+// turns) with the new user task already appended. A one-off caller with no
+// session to persist can just pass createInitialMessages() plus one message.
+export async function* runAgentLoop(
+  messages: OpenAI.Chat.ChatCompletionMessageParam[],
+  sandbox: Sandbox,
+): AsyncGenerator<AgentEvent> {
   const { tools, toolHandlers } = createTools(sandbox)
-  const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
-    { role: 'system', content: SYSTEM_PROMPT },
-    { role: 'user', content: task },
-  ]
+
+  // Computed fresh per run (not baked into the persisted system prompt,
+  // which would go stale the moment a long-lived session continues past
+  // today) — without this the model has no way to know "now" and defaults
+  // to guessing a year from its training data when phrasing search queries.
+  const dateNote: OpenAI.Chat.ChatCompletionMessageParam = {
+    role: 'system',
+    content: `今天的日期是 ${new Date().toISOString().slice(0, 10)}。涉及"最新"、"现在"、"今年"等时间相关的表述和搜索关键词时，以这个日期为准，不要依赖训练知识猜测当前年份。`,
+  }
 
   try {
     for (let turn = 0; turn < MAX_TURNS; turn++) {
       const chunkStream = await client.chat.completions.create({
         model: MODEL,
-        messages,
+        messages: [messages[0], dateNote, ...messages.slice(1)],
         tools,
         stream: true,
       })

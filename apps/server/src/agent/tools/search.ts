@@ -1,4 +1,5 @@
 import type OpenAI from 'openai'
+import { withRetry } from '../../lib/retry.js'
 
 interface TavilyResult {
   title: string
@@ -33,11 +34,23 @@ export const searchToolHandlers: Record<string, (args: unknown) => Promise<strin
     }
 
     const query = String((args as { query?: unknown })?.query ?? '')
-    const res = await fetch('https://api.tavily.com/search', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ api_key: apiKey, query, max_results: 5 }),
-    })
+
+    let res: Response
+    try {
+      res = await withRetry(async () => {
+        const r = await fetch('https://api.tavily.com/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ api_key: apiKey, query, max_results: 5 }),
+        })
+        // Retry server-side/transient failures; a 4xx (bad key, bad request) won't
+        // fix itself on retry, so surface it immediately instead of stalling.
+        if (!r.ok && r.status >= 500) throw new Error(`search upstream ${r.status}`)
+        return r
+      })
+    } catch {
+      return JSON.stringify({ error: '搜索服务暂时不可用，请稍后重试。' })
+    }
 
     if (!res.ok) {
       return JSON.stringify({ error: `搜索失败：${res.status} ${res.statusText}` })

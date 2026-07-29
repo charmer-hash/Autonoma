@@ -8,17 +8,23 @@
     "build": "tsc -p tsconfig.json",
     "start": "node --env-file-if-exists=.env dist/index.js",
     "typecheck": "tsc --noEmit",
-    "lint": "echo \"no lint configured\""
+    "lint": "echo \"no lint configured\"",
+    "db:generate": "drizzle-kit generate",
+    "create-user": "tsx --env-file=.env scripts/create-user.ts"
   },
   "dependencies": {
     "@autonoma/shared": "workspace:*",
     "@hono/node-server": "^1.13.7",
+    "drizzle-orm": "^0.45.2",
     "e2b": "^2.36.0",
     "hono": "^4.6.14",
-    "openai": "^6.49.0"
+    "openai": "^6.49.0",
+    "pg": "^8.22.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
+    "@types/pg": "^8.20.0",
+    "drizzle-kit": "^0.31.10",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   }

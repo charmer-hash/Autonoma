@@ -26,6 +26,7 @@ Managed as a pnpm workspace + Turborepo.
 pnpm install
 cp apps/web/.env.example apps/web/.env
 cp apps/server/.env.example apps/server/.env
+# fill in DATABASE_URL in apps/server/.env — the server won't start without it
 pnpm dev   # runs both apps/web (5173) and apps/server (8787) via turbo
 ```
 
@@ -49,8 +50,8 @@ Manual/CLI alternative: `cd apps/web && pnpm build && npx wrangler pages deploy`
    `apps/server/Dockerfile` (a multi-stage build using `turbo prune` so
    only the server's dependencies are installed).
 3. Set env vars: `DATABASE_URL`, `OPENROUTER_API_KEY`, `E2B_API_KEY`,
-   `TAVILY_API_KEY`, `CORS_ORIGIN` (the deployed frontend origin). Railway
-   sets `PORT` automatically.
+   `TAVILY_API_KEY`, `CORS_ORIGIN` (the deployed frontend origin),
+   `AUTH_SESSION_SECRET`. Railway sets `PORT` automatically.
 
 ### Database — Neon
 
@@ -77,7 +78,23 @@ available) so it can ground plans/recommendations in real facts instead of
 inventing them. Set `TAVILY_API_KEY`; without it the tool returns a clear
 "not configured" error instead of failing silently.
 
+### Login — real accounts, no self-serve signup
+
+The web console sits behind a login (username + password + a signed
+`httpOnly` session cookie). Accounts live in the `users` table (password
+hashed with `scrypt`, never stored in plaintext or in env vars) — there's no
+registration page or password reset, so create accounts manually:
+
+```bash
+cd apps/server && pnpm create-user <username> <password>
+```
+
+Set `AUTH_SESSION_SECRET` on the server to require login; if it's unset, the
+console (and `/api/agent/run`) runs open, which is only meant for local dev.
+`AUTH_SESSION_SECRET` should be a long random string — it signs the session
+cookie.
+
 ## Notes
 
-- Rate-limit or cap agent runs before sharing a live demo link — it burns LLM tokens per open.
+- Even with login, cap agent runs before sharing the link with others — it burns LLM tokens per session, not per login.
 - Turborepo caches builds per-package: touching only `apps/web` skips rebuilding `apps/server`, and vice versa.

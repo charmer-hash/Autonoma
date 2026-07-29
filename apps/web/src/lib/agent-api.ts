@@ -4,11 +4,16 @@ const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8787'
 
 // The browser's built-in EventSource only supports GET, and /api/agent/run is a
 // POST, so we parse the `data: ...\n\n` SSE framing by hand from a fetch stream.
-export async function* runAgent(task: string, signal?: AbortSignal): AsyncGenerator<AgentEvent> {
+export async function* runAgent(
+  task: string,
+  sessionId: string | undefined,
+  signal?: AbortSignal,
+): AsyncGenerator<AgentEvent> {
   const res = await fetch(`${API_URL}/api/agent/run`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task }),
+    credentials: 'include',
+    body: JSON.stringify({ task, sessionId }),
     signal,
   })
 
@@ -32,7 +37,14 @@ export async function* runAgent(task: string, signal?: AbortSignal): AsyncGenera
     for (const part of parts) {
       const dataLine = part.split('\n').find((line) => line.startsWith('data: '))
       if (!dataLine) continue
-      yield JSON.parse(dataLine.slice('data: '.length)) as AgentEvent
+      const raw = dataLine.slice('data: '.length)
+      try {
+        yield JSON.parse(raw) as AgentEvent
+      } catch {
+        // A non-JSON payload can only be hono/streaming's own default error
+        // frame (a bare message string) — treat it the same as our own.
+        yield { type: 'error', message: raw }
+      }
     }
   }
 }
