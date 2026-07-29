@@ -1,26 +1,36 @@
-import { useState } from 'react'
-import { ConfirmLogoutDialog } from '@/components/ConfirmLogoutDialog'
-import { ConsoleHeader } from '@/components/ConsoleHeader'
-import { Composer } from '@/components/Composer'
-import { MessageList } from '@/components/MessageList'
-import { Sidebar } from '@/components/Sidebar'
-import { useConsoleSession } from '@/hooks/useConsoleSession'
+import { useState } from "react";
+import { ConfirmLogoutDialog } from "@/components/ConfirmLogoutDialog";
+import { ConsoleHeader } from "@/components/ConsoleHeader";
+import { Composer } from "@/components/Composer";
+import { MessageList } from "@/components/MessageList";
+import { Sidebar } from "@/components/Sidebar";
+import { useConsoleSession } from "@/hooks/useConsoleSession";
 
 export function Console({ onLogout }: { onLogout: () => void }) {
-  const { task, setTask, blocks, running, sessionId, sessions, handleNewSession, loadSession, run } =
-    useConsoleSession()
+  const {
+    task,
+    setTask,
+    blocks,
+    running,
+    sessionId,
+    sessions,
+    handleNewSession,
+    loadSession,
+    run,
+  } = useConsoleSession();
 
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false)
-  const [theme, setTheme] = useState<'light' | 'dark'>(() =>
-    document.documentElement.classList.contains('dark') ? 'dark' : 'light',
-  )
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
+  const [theme, setTheme] = useState<"light" | "dark">(() =>
+    document.documentElement.classList.contains("dark") ? "dark" : "light",
+  );
+  console.log('theme', theme);
 
   function toggleTheme() {
-    const next = theme === 'dark' ? 'light' : 'dark'
-    setTheme(next)
-    document.documentElement.classList.toggle('dark', next === 'dark')
-    localStorage.setItem('theme', next)
+    const next = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    document.documentElement.classList.toggle("dark", next === "dark");
+    localStorage.setItem("theme", next);
   }
 
   return (
@@ -44,17 +54,22 @@ export function Console({ onLogout }: { onLogout: () => void }) {
           onLogoutClick={() => setLogoutConfirmOpen(true)}
         />
         <MessageList blocks={blocks} running={running} />
-        <Composer task={task} setTask={setTask} running={running} onSend={run} />
+        <Composer
+          task={task}
+          setTask={setTask}
+          running={running}
+          onSend={run}
+        />
       </div>
 
       <ConfirmLogoutDialog
         open={logoutConfirmOpen}
         onCancel={() => setLogoutConfirmOpen(false)}
         onConfirm={() => {
-          setLogoutConfirmOpen(false)
-          onLogout()
+          setLogoutConfirmOpen(false);
+          onLogout();
         }}
       />
     </div>
-  )
+  );
 }
