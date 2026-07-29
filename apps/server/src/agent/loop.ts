@@ -1,6 +1,6 @@
 import OpenAI from 'openai'
 import type { Sandbox } from 'e2b'
-import { createTools } from './tools.js'
+import { createTools } from './tools/index.js'
 import type { AgentEvent } from '@autonoma/shared'
 
 const client = new OpenAI({
@@ -13,10 +13,14 @@ const client = new OpenAI({
 const MODEL = process.env.OPENROUTER_MODEL ?? 'deepseek/deepseek-v4-pro'
 const MAX_TURNS = 30
 
-const SYSTEM_PROMPT = `You are a coding agent running in a sandboxed Linux VM.
-Use the run_command tool to execute shell commands and the write_file tool to create or edit files.
-Work step by step: write code, run it, read the output, and fix issues until the task is done.
-When you are finished, reply with plain text summarizing what you did and make no further tool calls.`
+const SYSTEM_PROMPT = `你是一个通用型 Agent，能够做调研、制定计划、撰写文档，并在沙箱化的 Linux 虚拟机里运行代码。
+
+可用工具：
+- web_search：查询实时的真实世界信息。凡是你不确定的具体事实——人名、价格、地址、电话号码、日期、营业时间等——在陈述之前必须先用这个工具查证。绝不能编造具体事实；如果查不到，就如实告诉用户查不到。
+- write_document：以 Markdown 格式产出最终交付物（计划、报告、行程、摘要等）。任务真正要求的输出内容用这个工具，它会展示给用户并提供下载。
+- run_command / write_file：任务需要写代码、跑代码时，在沙箱里读写文件、执行命令。这里写的文件用户看不到——用户需要保留的内容要用 write_document。
+
+按步骤推进：如果任务涉及真实世界的事实，先调研再行动。完成后用一段简短的文字总结你做了什么，不要再调用任何工具。`
 
 export async function* runAgentLoop(task: string, sandbox: Sandbox): AsyncGenerator<AgentEvent> {
   const { tools, toolHandlers } = createTools(sandbox)
@@ -73,7 +77,14 @@ export async function* runAgentLoop(task: string, sandbox: Sandbox): AsyncGenera
           } catch {
             args = toolCall.function.arguments
           }
-          yield { type: 'tool_call', name: toolCall.function.name, args }
+
+          // write_document's payload is the deliverable itself — show it as a
+          // document card instead of a generic tool call (its raw args would
+          // just be the same document dumped as escaped JSON).
+          const isDocument = toolCall.function.name === 'write_document'
+          if (!isDocument) {
+            yield { type: 'tool_call', name: toolCall.function.name, args }
+          }
 
           let result: string
           try {
@@ -83,8 +94,18 @@ export async function* runAgentLoop(task: string, sandbox: Sandbox): AsyncGenera
             result = `Tool execution failed: ${err instanceof Error ? err.message : String(err)}`
           }
 
+          if (isDocument) {
+            const { name, content } = args as { name?: unknown; content?: unknown }
+            yield {
+              type: 'document',
+              name: typeof name === 'string' ? name : 'document.md',
+              content: typeof content === 'string' ? content : '',
+            }
+          } else {
+            yield { type: 'tool_result', name: toolCall.function.name, result }
+          }
+
           messages.push({ role: 'tool', tool_call_id: toolCall.id, content: result })
-          yield { type: 'tool_result', name: toolCall.function.name, result }
         }
         continue
       }

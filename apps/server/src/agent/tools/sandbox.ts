@@ -1,7 +1,10 @@
 import type OpenAI from 'openai'
 import { CommandExitError, type Sandbox } from 'e2b'
 
-export function createTools(sandbox: Sandbox): {
+// Code-execution tools, backed by the per-request e2b sandbox — it's killed
+// when the request ends, so files written here never reach the user. Use
+// write_document (document.ts) for anything the user needs to keep.
+export function createSandboxTools(sandbox: Sandbox): {
   tools: OpenAI.Chat.ChatCompletionTool[]
   toolHandlers: Record<string, (args: unknown) => Promise<string>>
 } {
@@ -11,14 +14,14 @@ export function createTools(sandbox: Sandbox): {
       function: {
         name: 'run_command',
         description:
-          'Run a shell command in the sandbox and return its stdout, stderr, and exit code. ' +
-          'Use this to run code, install packages, or inspect the filesystem.',
+          '在沙箱里执行一条 shell 命令，返回标准输出、标准错误和退出码。' +
+          '用于运行代码、安装依赖包，或查看文件系统。',
         parameters: {
           type: 'object',
           properties: {
             command: {
               type: 'string',
-              description: 'Shell command to execute, e.g. "python main.py" or "npm install".',
+              description: '要执行的 shell 命令，例如 "python main.py" 或 "npm install"。',
             },
           },
           required: ['command'],
@@ -29,12 +32,14 @@ export function createTools(sandbox: Sandbox): {
       type: 'function',
       function: {
         name: 'write_file',
-        description: 'Write content to a file in the sandbox, creating parent directories as needed.',
+        description:
+          '把内容写入沙箱里的一个文件，会自动创建所需的父目录。' +
+          '用于你即将运行的代码文件——不要用来输出最终交付物（那个用 write_document）。',
         parameters: {
           type: 'object',
           properties: {
-            path: { type: 'string', description: 'File path to write, e.g. "main.py".' },
-            content: { type: 'string', description: 'Full file content.' },
+            path: { type: 'string', description: '要写入的文件路径，例如 "main.py"。' },
+            content: { type: 'string', description: '文件的完整内容。' },
           },
           required: ['path', 'content'],
         },

@@ -48,8 +48,9 @@ Manual/CLI alternative: `cd apps/web && pnpm build && npx wrangler pages deploy`
 2. Railway picks up `railway.json` at the repo root, which builds
    `apps/server/Dockerfile` (a multi-stage build using `turbo prune` so
    only the server's dependencies are installed).
-3. Set env vars: `DATABASE_URL`, `OPENROUTER_API_KEY`, `E2B_API_KEY`, `CORS_ORIGIN`
-   (the deployed frontend origin). Railway sets `PORT` automatically.
+3. Set env vars: `DATABASE_URL`, `OPENROUTER_API_KEY`, `E2B_API_KEY`,
+   `TAVILY_API_KEY`, `CORS_ORIGIN` (the deployed frontend origin). Railway
+   sets `PORT` automatically.
 
 ### Database — Neon
 
@@ -68,6 +69,13 @@ directly. Set `OPENROUTER_API_KEY`. The model is `OPENROUTER_MODEL`
 (default `deepseek/deepseek-v4-pro` — see `apps/server/src/agent/loop.ts`);
 if a model gets rate-limited or restricted on your OpenRouter account, swap
 it via the env var without touching code.
+
+### Web search — Tavily
+
+The agent's `web_search` tool calls [Tavily](https://tavily.com) (free tier
+available) so it can ground plans/recommendations in real facts instead of
+inventing them. Set `TAVILY_API_KEY`; without it the tool returns a clear
+"not configured" error instead of failing silently.
 
 ## Notes
 

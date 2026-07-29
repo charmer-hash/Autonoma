@@ -1,0 +1,54 @@
+import type OpenAI from 'openai'
+
+interface TavilyResult {
+  title: string
+  url: string
+  content: string
+}
+
+export const searchTools: OpenAI.Chat.ChatCompletionTool[] = [
+  {
+    type: 'function',
+    function: {
+      name: 'web_search',
+      description:
+        '联网搜索当前的真实世界信息——价格、地址、电话号码、营业时间、新闻，' +
+        '或任何你凭记忆无法确定的内容。在计划或建议中陈述这类具体事实之前，必须先搜索；绝不能编造。',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: '搜索关键词。' },
+        },
+        required: ['query'],
+      },
+    },
+  },
+]
+
+export const searchToolHandlers: Record<string, (args: unknown) => Promise<string>> = {
+  web_search: async (args) => {
+    const apiKey = process.env.TAVILY_API_KEY
+    if (!apiKey) {
+      return JSON.stringify({ error: '联网搜索未配置（缺少 TAVILY_API_KEY）。' })
+    }
+
+    const query = String((args as { query?: unknown })?.query ?? '')
+    const res = await fetch('https://api.tavily.com/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ api_key: apiKey, query, max_results: 5 }),
+    })
+
+    if (!res.ok) {
+      return JSON.stringify({ error: `搜索失败：${res.status} ${res.statusText}` })
+    }
+
+    const data = (await res.json()) as { results?: TavilyResult[] }
+    const results = (data.results ?? []).map((r) => ({
+      title: r.title,
+      url: r.url,
+      snippet: r.content,
+    }))
+    return JSON.stringify({ results })
+  },
+}

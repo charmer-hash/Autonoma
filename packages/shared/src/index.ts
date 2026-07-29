@@ -5,5 +5,6 @@ export type AgentEvent =
   | { type: 'text_delta'; delta: string }
   | { type: 'tool_call'; name: string; args: unknown }
   | { type: 'tool_result'; name: string; result: string }
+  | { type: 'document'; name: string; content: string }
   | { type: 'error'; message: string }
   | { type: 'done' }
