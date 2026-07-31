@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Loader2 } from 'lucide-react'
 import { checkAuth, logout } from '@/lib/auth-api'
+import { SplashScreen } from '@/components/SplashScreen'
 import { LoginPage } from '@/pages/LoginPage'
 import { Console } from '@/pages/Console'
 
@@ -14,11 +14,7 @@ function App() {
   }, [])
 
   if (authState === 'loading') {
-    return (
-      <div className="flex h-svh items-center justify-center bg-background">
-        <Loader2 className="size-6 animate-spin text-muted-foreground" />
-      </div>
-    )
+    return <SplashScreen />
   }
 
   if (authState === 'unauthenticated') {

@@ -7,7 +7,13 @@ import type { AgentEvent } from '@autonoma/shared'
 import { runAgentLoop } from './agent/loop.js'
 import { authenticate, clearSession, createSession, getOwnerId, isAuthenticated, requireAuth } from './auth.js'
 import { runMigrations } from './db/migrate.js'
-import { appendMessages, listSessions, loadSessionMessages, resolveSessionAccess } from './db/sessions.js'
+import {
+  appendMessages,
+  listSessions,
+  loadSessionMessages,
+  loadSessionMessagesForAgent,
+  resolveSessionAccess,
+} from './db/sessions.js'
 import { withRetry } from './lib/retry.js'
 
 const app = new Hono()
@@ -106,7 +112,7 @@ app.post('/api/agent/run', requireAuth, async (c) => {
     }
 
     try {
-      const messages = await loadSessionMessages(sessionId, ownerId)
+      const messages = await loadSessionMessagesForAgent(sessionId, ownerId)
       const turnStart = messages.length
       messages.push({ role: 'user', content: task })
 

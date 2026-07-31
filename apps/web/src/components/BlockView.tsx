@@ -1,7 +1,9 @@
-import { CircleAlert, Download, FileText } from 'lucide-react'
+import { useState } from 'react'
+import { CircleAlert, Download, FileText, Maximize2 } from 'lucide-react'
 import { Button } from '@autonoma/ui/components/button'
 import type { Block } from '@/types/blocks'
 import { downloadText } from '@/lib/format'
+import { DocumentPreviewDialog } from './DocumentPreviewDialog'
 import { Markdown } from './Markdown'
 import { ToolCard } from './ToolCard'
 
@@ -12,6 +14,8 @@ export function BlockView({
   block: Exclude<Block, { kind: 'user' }>
   live?: boolean
 }) {
+  const [previewOpen, setPreviewOpen] = useState(false)
+
   if (block.kind === 'text') {
     if (live) {
       // Plain text while streaming so the cursor can sit inline at the end —
@@ -30,23 +34,37 @@ export function BlockView({
 
   if (block.kind === 'document') {
     return (
-      <div className="overflow-hidden rounded-lg border bg-card">
-        <div className="flex items-center gap-2 border-b bg-muted/40 px-3 py-2">
-          <FileText className="size-4 shrink-0 text-primary" />
-          <span className="min-w-0 flex-1 truncate text-sm font-medium">{block.name}</span>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            onClick={() => downloadText(block.name, block.content)}
-            aria-label={`下载 ${block.name}`}
-          >
-            <Download className="size-4" />
-          </Button>
+      <>
+        <div className="overflow-hidden rounded-lg border bg-card">
+          <div className="flex items-center gap-2 border-b bg-muted/40 px-3 py-2">
+            <FileText className="size-4 shrink-0 text-primary" />
+            <span className="min-w-0 flex-1 truncate text-sm font-medium">{block.name}</span>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              onClick={() => setPreviewOpen(true)}
+              aria-label={`全屏预览 ${block.name}`}
+            >
+              <Maximize2 className="size-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              onClick={() => downloadText(block.name, block.content)}
+              aria-label={`下载 ${block.name}`}
+            >
+              <Download className="size-4" />
+            </Button>
+          </div>
+          <div className="max-h-96 overflow-y-auto px-4 py-3">
+            <Markdown text={block.content} />
+          </div>
         </div>
-        <div className="max-h-96 overflow-y-auto px-4 py-3">
-          <Markdown text={block.content} />
-        </div>
-      </div>
+        <DocumentPreviewDialog
+          doc={previewOpen ? { name: block.name, content: block.content } : null}
+          onClose={() => setPreviewOpen(false)}
+        />
+      </>
     )
   }
 

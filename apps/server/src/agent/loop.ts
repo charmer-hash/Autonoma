@@ -1,16 +1,9 @@
-import OpenAI from 'openai'
+import type OpenAI from 'openai'
 import type { Sandbox } from 'e2b'
 import { createTools } from './tools/index.js'
+import { client, MODEL } from './client.js'
 import type { AgentEvent } from '@autonoma/shared'
 
-const client = new OpenAI({
-  apiKey: process.env.OPENROUTER_API_KEY,
-  baseURL: 'https://openrouter.ai/api/v1',
-})
-
-// Some models get rate-limited or de-listed on OpenRouter without notice —
-// keep this an env var so swapping models doesn't need a code change.
-const MODEL = process.env.OPENROUTER_MODEL ?? 'deepseek/deepseek-v4-pro'
 const MAX_TURNS = 30
 
 const SYSTEM_PROMPT = `你是一个通用型 Agent，能够做调研、制定计划、撰写文档，并在沙箱化的 Linux 虚拟机里运行代码。

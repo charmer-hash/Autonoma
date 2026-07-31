@@ -1,6 +1,7 @@
 import { desc, eq, isNull, sql } from 'drizzle-orm'
 import type OpenAI from 'openai'
 import { createInitialMessages } from '../agent/loop.js'
+import { planFold, summarizeFold, type MessageRow } from '../agent/compaction.js'
 import { withRetry } from '../lib/retry.js'
 import { db } from './client.js'
 import { messages, sessions } from './schema.js'
@@ -46,25 +47,102 @@ export async function resolveSessionAccess(
   return 'forbidden'
 }
 
-export async function loadSessionMessages(
-  sessionId: string,
-  ownerId: string | undefined,
-): Promise<OpenAI.Chat.ChatCompletionMessageParam[]> {
+// Shared by both loadSessionMessages and loadSessionMessagesForAgent —
+// queries every row for a session (including its id, needed for compaction
+// bookkeeping), seeding a brand-new session with the system prompt on first
+// touch.
+async function loadMessageRows(sessionId: string, ownerId: string | undefined): Promise<MessageRow[]> {
   const rows = await withRetry(() =>
     db
-      .select({ message: messages.message })
+      .select({ id: messages.id, message: messages.message })
       .from(messages)
       .where(eq(messages.sessionId, sessionId))
       .orderBy(messages.id),
   )
 
-  if (rows.length > 0) return rows.map((row) => row.message)
+  if (rows.length > 0) return rows
 
   // Unseen sessionId — create the session row and seed it with the system prompt.
   const initial = createInitialMessages()
   await withRetry(() => db.insert(sessions).values({ id: sessionId, ownerId }).onConflictDoNothing())
-  await withRetry(() => db.insert(messages).values({ sessionId, message: initial[0] }))
-  return initial
+  const [inserted] = await withRetry(() =>
+    db
+      .insert(messages)
+      .values({ sessionId, message: initial[0] })
+      .returning({ id: messages.id, message: messages.message }),
+  )
+  return [inserted]
+}
+
+// Full, uncompacted conversation history — used by GET /api/sessions/:id so
+// browsing an old session always shows the real original turns, never a
+// summary standing in for folded-away messages. Compaction (see
+// loadSessionMessagesForAgent) only changes what gets *sent to the model*;
+// it never deletes rows, so this always reflects everything that happened.
+export async function loadSessionMessages(
+  sessionId: string,
+  ownerId: string | undefined,
+): Promise<OpenAI.Chat.ChatCompletionMessageParam[]> {
+  const rows = await loadMessageRows(sessionId, ownerId)
+  return rows.map((row) => row.message)
+}
+
+// History to actually send to the LLM for a turn — same underlying data as
+// loadSessionMessages, but with older messages folded into a rolling
+// summary once the unfolded tail grows past a size threshold (see
+// agent/compaction.ts). Used by POST /api/agent/run only.
+export async function loadSessionMessagesForAgent(
+  sessionId: string,
+  ownerId: string | undefined,
+): Promise<OpenAI.Chat.ChatCompletionMessageParam[]> {
+  const rows = await loadMessageRows(sessionId, ownerId)
+  const systemRow = rows[0]
+
+  const [sessionRow] = await withRetry(() =>
+    db
+      .select({ summary: sessions.summary, summarizedThroughId: sessions.summarizedThroughId })
+      .from(sessions)
+      .where(eq(sessions.id, sessionId))
+      .limit(1),
+  )
+
+  const cutoff = sessionRow?.summarizedThroughId ?? systemRow.id
+  let tailRows = rows.filter((r) => r.id > cutoff)
+  let summary = sessionRow?.summary ?? null
+
+  const plan = planFold(tailRows)
+  if (plan) {
+    try {
+      summary = await summarizeFold(
+        summary,
+        plan.toFold.map((r) => r.message),
+      )
+      await withRetry(() =>
+        db
+          .update(sessions)
+          .set({ summary, summarizedThroughId: plan.cutThroughId })
+          .where(eq(sessions.id, sessionId)),
+      )
+      tailRows = plan.keep
+    } catch (err) {
+      // Best-effort: a compaction failure must not break the turn. Fall
+      // back to sending the full unfolded tail this time; we'll retry
+      // folding on a later call.
+      console.error('history compaction failed, sending full tail:', err)
+    }
+  }
+
+  const result: OpenAI.Chat.ChatCompletionMessageParam[] = [systemRow.message]
+  if (summary) {
+    result.push({
+      role: 'system',
+      content:
+        '以下是本会话更早部分对话的摘要（原始记录仍完整保存在数据库中，这里折叠只是为了控制发给模型的' +
+        `上下文长度）：\n\n${summary}`,
+    })
+  }
+  result.push(...tailRows.map((r) => r.message))
+  return result
 }
 
 export async function appendMessages(

@@ -19,10 +19,14 @@ export function useConsoleSession() {
   // without that param still continues the last conversation). The URL wins
   // when both are present.
   const [storedSessionId, setStoredSessionId] = useLocalStorageState<string | undefined>('sessionId')
-  const [sessionId, setSessionId] = useState<string | undefined>(
-    () => readSessionIdFromUrl() ?? storedSessionId,
-  )
+  const initialSessionId = readSessionIdFromUrl() ?? storedSessionId
+  const [sessionId, setSessionId] = useState<string | undefined>(initialSessionId)
   const [sessions, setSessions] = useState<SessionSummary[]>([])
+  const [sessionsLoading, setSessionsLoading] = useState(true)
+  // Starts true whenever there's a sessionId to restore, so the console
+  // shows a loading state instead of briefly flashing the "no messages yet"
+  // empty state for a session that actually has history.
+  const [messagesLoading, setMessagesLoading] = useState(Boolean(initialSessionId))
 
   function setActiveSessionId(id: string | undefined) {
     setStoredSessionId(id)
@@ -35,6 +39,8 @@ export function useConsoleSession() {
       setSessions(await listSessions())
     } catch (err) {
       console.error('failed to load sessions:', err)
+    } finally {
+      setSessionsLoading(false)
     }
   }
 
@@ -52,6 +58,7 @@ export function useConsoleSession() {
       getSessionMessages(sessionId)
         .then((messages) => setBlocks(messagesToBlocks(messages)))
         .catch((err) => appendError(err instanceof Error ? err.message : String(err)))
+        .finally(() => setMessagesLoading(false))
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -94,17 +101,21 @@ export function useConsoleSession() {
     if (running) return
     setActiveSessionId(undefined)
     setBlocks([])
+    setMessagesLoading(false)
   }
 
   async function loadSession(id: string) {
     if (running || id === sessionId) return
     setActiveSessionId(id)
     setBlocks([])
+    setMessagesLoading(true)
     try {
       const messages = await getSessionMessages(id)
       setBlocks(messagesToBlocks(messages))
     } catch (err) {
       appendError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setMessagesLoading(false)
     }
   }
 
@@ -155,6 +166,8 @@ export function useConsoleSession() {
     running,
     sessionId,
     sessions,
+    sessionsLoading,
+    messagesLoading,
     handleNewSession,
     loadSession,
     run,

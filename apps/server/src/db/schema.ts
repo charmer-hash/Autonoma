@@ -1,4 +1,4 @@
-import { bigserial, jsonb, pgTable, text, timestamp } from 'drizzle-orm/pg-core'
+import { bigint, bigserial, jsonb, pgTable, text, timestamp } from 'drizzle-orm/pg-core'
 import type OpenAI from 'openai'
 
 export const users = pgTable('users', {
@@ -16,6 +16,14 @@ export const sessions = pgTable('sessions', {
   ownerId: text('owner_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  // Rolling summary of history folded out of the raw send-to-model tail —
+  // see agent/compaction.ts. Null means nothing has been folded yet.
+  // Original message rows are never deleted; this only changes what
+  // loadSessionMessagesForAgent sends to the LLM, not what's stored.
+  summary: text('summary'),
+  // Last messages.id folded into `summary` (no FK to messages — rows there
+  // are append-only and never deleted, so there's nothing to dangle).
+  summarizedThroughId: bigint('summarized_through_id', { mode: 'number' }),
 })
 
 export const messages = pgTable('messages', {
