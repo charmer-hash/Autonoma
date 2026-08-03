@@ -51,7 +51,8 @@ Manual/CLI alternative: `cd apps/web && pnpm build && npx wrangler pages deploy`
    only the server's dependencies are installed).
 3. Set env vars: `DATABASE_URL`, `OPENROUTER_API_KEY`, `E2B_API_KEY`,
    `TAVILY_API_KEY`, `CORS_ORIGIN` (the deployed frontend origin),
-   `AUTH_SESSION_SECRET`. Railway sets `PORT` automatically.
+   `AUTH_SESSION_SECRET`, `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`,
+   `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`. Railway sets `PORT` automatically.
 
 ### Database — Neon
 
@@ -70,6 +71,16 @@ directly. Set `OPENROUTER_API_KEY`. The model is `OPENROUTER_MODEL`
 (default `deepseek/deepseek-v4-pro` — see `apps/server/src/agent/loop.ts`);
 if a model gets rate-limited or restricted on your OpenRouter account, swap
 it via the env var without touching code.
+
+### Artifact export — Cloudflare R2
+
+The agent's `export_artifact` tool uploads files it generates in its sandbox
+(charts, PDFs, Excel, CSVs, etc.) to an R2 bucket, since the sandbox itself
+is destroyed at the end of each request. Create an R2 bucket and an API
+token (S3-compatible credentials) in the Cloudflare dashboard, then set
+`R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`.
+Files are served back to the user via a short-lived presigned URL
+(`GET /api/artifacts/:id`), never proxied through the server.
 
 ### Web search — Tavily
 

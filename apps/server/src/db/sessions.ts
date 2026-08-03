@@ -47,6 +47,23 @@ export async function resolveSessionAccess(
   return 'forbidden'
 }
 
+// Tolerates a session row that doesn't exist yet (brand-new sessionId,
+// nothing persisted until loadSessionMessagesForAgent's first touch) —
+// returns null rather than throwing, same as "no sandbox to reconnect to".
+export async function getSandboxId(sessionId: string): Promise<string | null> {
+  const rows = await withRetry(() =>
+    db.select({ sandboxId: sessions.sandboxId }).from(sessions).where(eq(sessions.id, sessionId)).limit(1),
+  )
+  return rows[0]?.sandboxId ?? null
+}
+
+// Callers must only call this once the session row is known to exist (e.g.
+// after loadSessionMessagesForAgent) — this is a plain UPDATE, not an
+// upsert, and silently affects zero rows otherwise.
+export async function setSandboxId(sessionId: string, sandboxId: string): Promise<void> {
+  await withRetry(() => db.update(sessions).set({ sandboxId }).where(eq(sessions.id, sessionId)))
+}
+
 // Shared by both loadSessionMessages and loadSessionMessagesForAgent —
 // queries every row for a session (including its id, needed for compaction
 // bookkeeping), seeding a brand-new session with the system prompt on first

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useLocalStorageState } from 'ahooks'
 import { last as lastOf } from 'lodash-es'
-import type { SessionSummary } from '@autonoma/shared'
+import type { SessionSummary, UploadedAttachment } from '@autonoma/shared'
 import type { Block } from '@/types/blocks'
 import { runAgent } from '@/lib/agent-api'
 import { getSessionMessages, listSessions } from '@/lib/sessions-api'
@@ -73,15 +73,18 @@ export function useConsoleSession() {
     })
   }
 
-  function startTool(name: string, args: unknown) {
-    setBlocks((prev) => [...prev, { kind: 'tool', name, args, status: 'running' }])
+  function startTool(id: string, name: string, args: unknown) {
+    setBlocks((prev) => [...prev, { kind: 'tool', id, name, args, status: 'running' }])
   }
 
-  function finishTool(result: string) {
+  // Matched by id, not "the last block" — the SSE tool_call/tool_result
+  // events carry the same id as the underlying tool_call, so this stays
+  // correct even if that assumption about ordering ever changes.
+  function finishTool(id: string, result: string) {
     setBlocks((prev) => {
-      const last = lastOf(prev)
-      if (last?.kind !== 'tool') return prev
-      return [...prev.slice(0, -1), { ...last, result, status: 'done' }]
+      const idx = prev.findIndex((b) => b.kind === 'tool' && b.id === id)
+      if (idx === -1) return prev
+      return [...prev.slice(0, idx), { ...(prev[idx] as Extract<Block, { kind: 'tool' }>), result, status: 'done' }, ...prev.slice(idx + 1)]
     })
   }
 
@@ -91,6 +94,19 @@ export function useConsoleSession() {
 
   function appendDocument(name: string, content: string) {
     setBlocks((prev) => [...prev, { kind: 'document', name, content }])
+  }
+
+  // export_artifact always emits a running tool card first (see loop.ts), so
+  // this swaps that card for the artifact card instead of appending both.
+  function appendArtifact(id: string, name: string, mimeType: string, size: number) {
+    setBlocks((prev) => {
+      const last = lastOf(prev)
+      const artifactBlock: Block = { kind: 'artifact', id, name, mimeType, size }
+      if (last?.kind === 'tool' && last.status === 'running') {
+        return [...prev.slice(0, -1), artifactBlock]
+      }
+      return [...prev, artifactBlock]
+    })
   }
 
   function adoptSessionId(id: string) {
@@ -119,15 +135,15 @@ export function useConsoleSession() {
     }
   }
 
-  async function run() {
+  async function run(attachments?: UploadedAttachment[]) {
     const currentTask = task.trim()
     if (!currentTask || running) return
 
     setTask('')
-    setBlocks((prev) => [...prev, { kind: 'user', text: currentTask }])
+    setBlocks((prev) => [...prev, { kind: 'user', text: currentTask, attachments }])
     setRunning(true)
     try {
-      for await (const event of runAgent(currentTask, sessionId)) {
+      for await (const event of runAgent(currentTask, sessionId, attachments)) {
         switch (event.type) {
           case 'session':
             adoptSessionId(event.sessionId)
@@ -136,13 +152,16 @@ export function useConsoleSession() {
             appendText(event.delta)
             break
           case 'tool_call':
-            startTool(event.name, event.args)
+            startTool(event.id, event.name, event.args)
             break
           case 'tool_result':
-            finishTool(event.result)
+            finishTool(event.id, event.result)
             break
           case 'document':
             appendDocument(event.name, event.content)
+            break
+          case 'artifact':
+            appendArtifact(event.id, event.name, event.mimeType, event.size)
             break
           case 'error':
             appendError(event.message)

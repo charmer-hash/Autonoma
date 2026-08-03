@@ -1,0 +1,23 @@
+{
+  "name": "@autonoma/upload",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    "./lib/*": "./src/lib/*.ts",
+    "./hooks/*": "./src/hooks/*.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@autonoma/shared": "workspace:*"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.17",
+    "typescript": "^5.7.2"
+  }
+}

@@ -1,10 +1,11 @@
 import { useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import { last as lastOf } from 'lodash-es'
 import { gsap } from 'gsap'
-import { User } from 'lucide-react'
+import { Paperclip, User } from 'lucide-react'
 import { cn } from '@autonoma/ui/lib/utils'
 import type { Block } from '@/types/blocks'
 import { groupBlocks } from '@/lib/blocks'
+import { formatBytes } from '@/lib/format'
 import { BlockView } from './BlockView'
 import { BrandMark } from './BrandMark'
 
@@ -103,8 +104,24 @@ export function MessageList({
                   }}
                   className="flex items-start justify-end gap-2"
                 >
-                  <div className="max-w-[75%] rounded-2xl bg-primary px-4 py-2 text-sm whitespace-pre-wrap text-primary-foreground">
-                    {group.text}
+                  <div className="flex max-w-[75%] flex-col items-end gap-1.5">
+                    {group.attachments && group.attachments.length > 0 && (
+                      <div className="flex flex-wrap justify-end gap-1.5">
+                        {group.attachments.map((a, i) => (
+                          <div
+                            key={i}
+                            className="flex items-center gap-1.5 rounded-lg border bg-card px-2.5 py-1.5 text-xs"
+                          >
+                            <Paperclip className="size-3.5 shrink-0 text-muted-foreground" />
+                            <span className="max-w-40 truncate font-medium">{a.filename}</span>
+                            <span className="shrink-0 text-muted-foreground">{formatBytes(a.size)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <div className="rounded-2xl bg-primary px-4 py-2 text-sm whitespace-pre-wrap text-primary-foreground">
+                      {group.text}
+                    </div>
                   </div>
                   <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-secondary text-secondary-foreground">
                     <User className="size-4" />
@@ -122,11 +139,27 @@ export function MessageList({
                   <div className="min-w-0 flex-1 space-y-2">
                     {group.blocks.map((block, j) => (
                       <BlockView
-                        key={j}
+                        key={'id' in block ? block.id : j}
                         block={block}
                         live={running && i === groups.length - 1 && j === group.blocks.length - 1}
                       />
                     ))}
+                    {/* A tool call finishing (status -> 'done') is a silent jump —
+                        no more sweep animation, no next block yet either. Without
+                        this, the page shows nothing happening in between, even
+                        though the agent is still working (deciding the next step,
+                        or about to stream its reply). Reuses the same breathing
+                        dot as the pre-first-block indicator below, minus the
+                        avatar — this one continues the existing group instead of
+                        starting a new row. */}
+                    {running &&
+                      i === groups.length - 1 &&
+                      lastOf(group.blocks)?.kind === 'tool' &&
+                      (lastOf(group.blocks) as Extract<Block, { kind: 'tool' }>).status === 'done' && (
+                        <div className="flex items-center pt-1">
+                          <span className="size-2 rounded-full bg-primary [animation:breathing-glow_1.6s_ease-in-out_infinite]" />
+                        </div>
+                      )}
                   </div>
                 </div>
               ),
@@ -134,10 +167,8 @@ export function MessageList({
             {running && lastOf(blocks)?.kind === 'user' && (
               <div className="flex items-start gap-2">
                 <BrandMark className="size-7 shrink-0 animate-pulse" />
-                <div className="flex items-center gap-1 pt-2.5">
-                  <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.3s]" />
-                  <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.15s]" />
-                  <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground" />
+                <div className="flex items-center pt-3.5">
+                  <span className="size-2 rounded-full bg-primary [animation:breathing-glow_1.6s_ease-in-out_infinite]" />
                 </div>
               </div>
             )}

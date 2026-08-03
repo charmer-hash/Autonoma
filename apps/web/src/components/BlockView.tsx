@@ -3,6 +3,7 @@ import { CircleAlert, Download, FileText, Maximize2 } from 'lucide-react'
 import { Button } from '@autonoma/ui/components/button'
 import type { Block } from '@/types/blocks'
 import { downloadText } from '@/lib/format'
+import { ArtifactCard } from './ArtifactCard'
 import { DocumentPreviewDialog } from './DocumentPreviewDialog'
 import { Markdown } from './Markdown'
 import { ToolCard } from './ToolCard'
@@ -66,6 +67,10 @@ export function BlockView({
         />
       </>
     )
+  }
+
+  if (block.kind === 'artifact') {
+    return <ArtifactCard block={block} />
   }
 
   if (block.kind === 'error') {

@@ -29,6 +29,20 @@
       "when": 1785469803875,
       "tag": "0003_ambiguous_paper_doll",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1785723482073,
+      "tag": "0004_zippy_talisman",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1785738364337,
+      "tag": "0005_pretty_karen_page",
+      "breakpoints": true
     }
   ]
 }

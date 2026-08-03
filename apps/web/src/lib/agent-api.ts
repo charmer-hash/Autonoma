@@ -1,4 +1,4 @@
-import type { AgentEvent } from '@autonoma/shared'
+import type { AgentEvent, UploadedAttachment } from '@autonoma/shared'
 import { apiFetch, readErrorMessage } from './api-client'
 
 // The browser's built-in EventSource only supports GET, and /api/agent/run is a
@@ -6,12 +6,13 @@ import { apiFetch, readErrorMessage } from './api-client'
 export async function* runAgent(
   task: string,
   sessionId: string | undefined,
+  attachments?: UploadedAttachment[],
   signal?: AbortSignal,
 ): AsyncGenerator<AgentEvent> {
   const res = await apiFetch('/api/agent/run', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task, sessionId }),
+    body: JSON.stringify({ task, sessionId, attachments }),
     signal,
   })
 
