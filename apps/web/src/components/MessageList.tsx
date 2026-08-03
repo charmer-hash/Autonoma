@@ -3,6 +3,7 @@ import { last as lastOf } from 'lodash-es'
 import { gsap } from 'gsap'
 import { Paperclip, User } from 'lucide-react'
 import { cn } from '@autonoma/ui/lib/utils'
+import type { PreviewPanelController } from '@/hooks/usePreviewPanel'
 import type { Block } from '@/types/blocks'
 import { groupBlocks } from '@/lib/blocks'
 import { formatBytes } from '@/lib/format'
@@ -22,10 +23,12 @@ export function MessageList({
   blocks,
   running,
   loading,
+  panel,
 }: {
   blocks: Block[]
   running: boolean
   loading?: boolean
+  panel: PreviewPanelController
 }) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const groupRefs = useRef<(HTMLDivElement | null)[]>([])
@@ -142,6 +145,7 @@ export function MessageList({
                         key={'id' in block ? block.id : j}
                         block={block}
                         live={running && i === groups.length - 1 && j === group.blocks.length - 1}
+                        panel={panel}
                       />
                     ))}
                     {/* A tool call finishing (status -> 'done') is a silent jump —

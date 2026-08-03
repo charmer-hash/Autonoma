@@ -1,3 +1,29 @@
 @import "@autonoma/ui/globals.css";
 
 @source "./";
+
+/* Diagonal shimmer swept across a running tool call's header (ToolCard.tsx) —
+   a clearer "this is actively working" signal than a spinner alone. */
+@keyframes tool-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+
+/* Idle "still working" indicator (MessageList.tsx) — a single dot fading
+   and glowing in and out, like a breathing LED, rather than dots bouncing
+   in sequence. */
+@keyframes breathing-glow {
+  0%,
+  100% {
+    opacity: 0.35;
+    box-shadow: 0 0 0 0 color-mix(in oklch, var(--primary) 55%, transparent);
+  }
+  50% {
+    opacity: 1;
+    box-shadow: 0 0 8px 2px color-mix(in oklch, var(--primary) 55%, transparent);
+  }
+}

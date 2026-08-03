@@ -1,10 +1,14 @@
 import { Globe } from 'lucide-react'
-import type { Block } from '@/types/blocks'
+import type { ToolResultProps } from '@/lib/tool-meta'
 import { cleanSnippet, hostname, parseResult } from '@/lib/format'
 
 type SearchResult = { title: string; url: string; snippet: string }
 
-export function WebSearchResult({ block }: { block: Extract<Block, { kind: 'tool' }> }) {
+// No `variant` handling needed — this result is already a plain list, never
+// height-capped like the *pre*-based results, so "compact" and "full" look
+// identical. Still typed as ToolResultProps so it satisfies
+// getToolResultComponent's shared return type.
+export function WebSearchResult({ block }: ToolResultProps) {
   const result = parseResult<{ error?: string; results?: SearchResult[] }>(block.result)
 
   if (block.result === undefined) {

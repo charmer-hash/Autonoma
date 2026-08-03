@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { CircleAlert, Download, FileText, Maximize2 } from 'lucide-react'
 import { Button } from '@autonoma/ui/components/button'
+import type { PreviewPanelController } from '@/hooks/usePreviewPanel'
 import type { Block } from '@/types/blocks'
 import { downloadText } from '@/lib/format'
 import { ArtifactCard } from './ArtifactCard'
@@ -11,9 +12,11 @@ import { ToolCard } from './ToolCard'
 export function BlockView({
   block,
   live,
+  panel,
 }: {
   block: Exclude<Block, { kind: 'user' }>
   live?: boolean
+  panel: PreviewPanelController
 }) {
   const [previewOpen, setPreviewOpen] = useState(false)
 
@@ -70,7 +73,7 @@ export function BlockView({
   }
 
   if (block.kind === 'artifact') {
-    return <ArtifactCard block={block} />
+    return <ArtifactCard block={block} panel={panel} />
   }
 
   if (block.kind === 'error') {
@@ -82,5 +85,5 @@ export function BlockView({
     )
   }
 
-  return <ToolCard block={block} />
+  return <ToolCard block={block} panel={panel} />
 }
