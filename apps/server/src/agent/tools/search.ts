@@ -43,8 +43,8 @@ export const searchToolHandlers: Record<string, (args: unknown) => Promise<strin
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ api_key: apiKey, query, max_results: 5 }),
         })
-        // Retry server-side/transient failures; a 4xx (bad key, bad request) won't
-        // fix itself on retry, so surface it immediately instead of stalling.
+        // 只对服务端/临时性故障重试；4xx（key 错误、请求错误）
+        // 重试也不会自愈，所以直接立即报出来，而不是干等着重试。
         if (!r.ok && r.status >= 500) throw new Error(`search upstream ${r.status}`)
         return r
       })

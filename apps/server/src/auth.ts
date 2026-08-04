@@ -3,21 +3,21 @@ import { deleteCookie, getSignedCookie, setSignedCookie } from 'hono/cookie'
 import { findUserIdByCredentials } from './db/users.js'
 
 const SESSION_COOKIE = 'session'
-const SESSION_MAX_AGE = 60 * 60 * 24 * 7 // 7 days
+const SESSION_MAX_AGE = 60 * 60 * 24 * 7 // 7 天
 
-// Cross-site in production (separate frontend/backend domains) needs
-// SameSite=None, which browsers only honor alongside Secure — and Secure
-// cookies aren't sent over plain http, which local dev uses.
+// 生产环境下前后端跨站（域名不同）需要 SameSite=None，而浏览器
+// 只有在同时带 Secure 的情况下才会认可这个设置——而 Secure cookie
+// 不会通过普通 http 发送，本地开发用的正是普通 http。
 const isProd = process.env.NODE_ENV === 'production'
 
-// Accounts live in the users table (see scripts/create-user.ts) — this flag
-// only gates whether login/ownership is enforced at all, so local dev can
-// still run wide open without seeding a user first.
+// 账号信息存放在 users 表里（参见 scripts/create-user.ts）——这个
+// 标志只决定是否要强制启用登录/归属校验，所以本地开发时即使
+// 没有预先创建用户，也依然可以完全开放地运行。
 function authConfigured(): boolean {
   return Boolean(process.env.AUTH_SESSION_SECRET)
 }
 
-// Returns the matched user's id on success, undefined otherwise.
+// 匹配成功时返回该用户的 id，否则返回 undefined。
 export async function authenticate(username: unknown, password: unknown): Promise<string | undefined> {
   if (typeof username !== 'string' || typeof password !== 'string' || !username || !password) {
     return undefined
@@ -25,10 +25,10 @@ export async function authenticate(username: unknown, password: unknown): Promis
   return findUserIdByCredentials(username, password)
 }
 
-// The cookie value is the authenticated user's id — it doubles as the
-// "owner" a conversation session gets bound to (see db/sessions.ts's
-// resolveSessionAccess), and staying stable across logins means logging out
-// and back in as the same user doesn't orphan their previous sessions.
+// cookie 的值就是通过身份验证的用户 id——它同时也充当会话绑定的
+// "owner"（参见 db/sessions.ts 的 resolveSessionAccess），在多次
+// 登录之间保持稳定，意味着同一用户退出再登录不会导致之前的
+// 会话变成孤儿。
 export async function createSession(c: Context, ownerId: string): Promise<void> {
   const secret = process.env.AUTH_SESSION_SECRET!
   await setSignedCookie(c, SESSION_COOKIE, ownerId, secret, {
@@ -45,12 +45,12 @@ export function clearSession(c: Context): void {
 }
 
 export async function isAuthenticated(c: Context): Promise<boolean> {
-  if (!authConfigured()) return true // no credentials set — auth is off (local dev default)
+  if (!authConfigured()) return true // 未设置凭据——鉴权处于关闭状态（本地开发默认情况）
   return Boolean(await getOwnerId(c))
 }
 
-// undefined when auth is off (nothing to enforce ownership against) or the
-// cookie is missing/invalid — callers should treat that as "no owner".
+// 当鉴权关闭（没有归属需要校验）或 cookie 缺失/无效时返回
+// undefined——调用方应把这种情况当作"没有 owner"处理。
 export async function getOwnerId(c: Context): Promise<string | undefined> {
   if (!authConfigured()) return undefined
   const value = await getSignedCookie(c, process.env.AUTH_SESSION_SECRET!, SESSION_COOKIE)

@@ -21,7 +21,7 @@ export function ConfirmLogoutDialog({
     if (open) setRender(true)
   }, [open])
 
-  // Entrance: fires once render catches up to an `open` that's already true.
+  // 进场：在 render 追上已经为 true 的 `open` 之后触发。
   useLayoutEffect(() => {
     if (!render || !open) return
     gsap.set(backdropRef.current, { opacity: 0 })
@@ -31,7 +31,7 @@ export function ConfirmLogoutDialog({
     confirmButtonRef.current?.focus()
   }, [render, open])
 
-  // Exit: play the animation, then actually unmount.
+  // 退场：先播放动画，然后再真正卸载组件。
   useLayoutEffect(() => {
     if (open || !render) return
     const tl = gsap.timeline({ onComplete: () => setRender(false) })

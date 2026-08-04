@@ -3,9 +3,9 @@ import type { StoredMessage } from '@autonoma/shared'
 import type { Block, Group } from '@/types/blocks'
 import { parseResult } from '@/lib/format'
 
-// Reconstructs the UI blocks for a persisted session — mirrors exactly how
-// apps/server/src/agent/loop.ts:77-115 builds the same history live, so a
-// reloaded conversation renders identically to one that just finished running.
+// 为一个持久化的会话重建 UI blocks——与 apps/server/src/agent/loop.ts:77-115
+// 实时构建同一份历史记录的方式完全一致，所以重新加载的对话
+// 与刚运行完的对话渲染效果是一样的。
 export function messagesToBlocks(messages: StoredMessage[]): Block[] {
   const toolResultsById = new Map<string, string>()
   for (const m of messages) {
@@ -41,10 +41,9 @@ export function messagesToBlocks(messages: StoredMessage[]): Block[] {
         continue
       }
 
-      // export_artifact's payload (the exported file's id/mimeType/size) only
-      // exists after the tool ran, so it's parsed from the result, not the
-      // args — unlike write_document, whose content the model authored
-      // itself as its own tool_call args.
+      // export_artifact 的负载（导出文件的 id/mimeType/size）只有在工具
+      // 运行之后才存在，所以是从 result 中解析出来的，而不是 args——这
+      // 与 write_document 不同，后者的内容是模型自己作为 tool_call 参数写的。
       if (call.function.name === 'export_artifact') {
         const parsed = parseResult<{ ok?: boolean; id?: string; name?: string; mimeType?: string; size?: number }>(result)
         if (parsed?.ok && parsed.id && parsed.name && parsed.mimeType && typeof parsed.size === 'number') {
@@ -59,8 +58,8 @@ export function messagesToBlocks(messages: StoredMessage[]): Block[] {
   return blocks
 }
 
-// Groups consecutive non-user blocks together so a whole turn's tool calls +
-// text share one avatar, the way Slack/Discord/ChatGPT group same-sender messages.
+// 把连续的非用户 block 归为一组，使得一整轮的工具调用 + 文本共用同一个
+// 头像，就像 Slack/Discord/ChatGPT 对同一发送者的消息进行分组那样。
 export function groupBlocks(blocks: Block[]): Group[] {
   const groups: Group[] = []
   for (const block of blocks) {

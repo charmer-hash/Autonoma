@@ -1,8 +1,8 @@
 import type { AgentEvent, UploadedAttachment } from '@autonoma/shared'
 import { apiFetch, readErrorMessage } from './api-client'
 
-// The browser's built-in EventSource only supports GET, and /api/agent/run is a
-// POST, so we parse the `data: ...\n\n` SSE framing by hand from a fetch stream.
+// 浏览器内置的 EventSource 只支持 GET，而 /api/agent/run 是 POST 请求，
+// 所以我们从 fetch 流中手动解析 `data: ...\n\n` 这种 SSE 帧格式。
 export async function* runAgent(
   task: string,
   sessionId: string | undefined,
@@ -39,8 +39,8 @@ export async function* runAgent(
       try {
         yield JSON.parse(raw) as AgentEvent
       } catch {
-        // A non-JSON payload can only be hono/streaming's own default error
-        // frame (a bare message string) — treat it the same as our own.
+        // 非 JSON 的内容只可能是 hono/streaming 自身默认的错误帧
+        // （一个纯字符串消息）——把它当作我们自己的错误来处理。
         yield { type: 'error', message: raw }
       }
     }

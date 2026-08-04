@@ -1,12 +1,10 @@
 import { useState } from 'react'
 import { PreviewLoading } from './PreviewLoading'
 
-// Microsoft's own online viewer, embedded — zero backend/infra cost, but the
-// file's bytes get fetched and rendered by Microsoft's servers, and `url`
-// must be publicly fetchable within its (5-minute) presign window for their
-// server to reach it. Fine for docx/xlsx/pptx today; revisit with a
-// self-hosted OnlyOffice Document Server if privacy/reliability ever
-// becomes a requirement.
+// 内嵌了微软自家的在线查看器——不产生任何后端/基础设施成本，但文件字节流会被
+// 微软的服务器获取并渲染，因此 `url` 必须在其（5 分钟的）预签名有效期内可被
+// 公开访问，微软服务器才能取到文件。目前对 docx/xlsx/pptx 来说够用；如果以后
+// 对隐私/可靠性有要求，可以考虑改用自建的 OnlyOffice Document Server。
 export function OfficePreview({ url }: { url: string }) {
   const [loading, setLoading] = useState(true)
   const src = `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(url)}`

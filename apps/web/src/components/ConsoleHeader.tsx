@@ -22,8 +22,8 @@ export function ConsoleHeader({
   const themeIconRef = useRef<HTMLSpanElement>(null)
   const mounted = useRef(false)
 
-  // Skip the animation on first paint — only play it on an actual toggle,
-  // otherwise every fresh page load would spin the icon in for no reason.
+  // 首次渲染时跳过动画——只在真正切换主题时播放，
+  // 否则每次页面刷新都会莫名其妙地转一下图标。
   useLayoutEffect(() => {
     if (!mounted.current) {
       mounted.current = true

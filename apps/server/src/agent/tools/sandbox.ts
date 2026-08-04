@@ -1,9 +1,9 @@
 import type OpenAI from 'openai'
 import { CommandExitError, type Sandbox } from 'e2b'
 
-// Code-execution tools, backed by the per-request e2b sandbox — it's killed
-// when the request ends, so files written here never reach the user. Use
-// write_document (document.ts) for anything the user needs to keep.
+// 代码执行相关工具，底层依托每次请求独立的 e2b 沙箱——请求结束后
+// 沙箱就会被销毁，所以这里写入的文件永远不会到达用户手中。
+// 用户需要保留的内容请用 write_document（document.ts）。
 export function createSandboxTools(sandbox: Sandbox): {
   tools: OpenAI.Chat.ChatCompletionTool[]
   toolHandlers: Record<string, (args: unknown) => Promise<string>>

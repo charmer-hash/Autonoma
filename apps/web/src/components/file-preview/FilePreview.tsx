@@ -8,8 +8,8 @@ import { TextPreview } from './TextPreview'
 import type { FilePreviewSource } from './types'
 import { UnsupportedPreview } from './UnsupportedPreview'
 
-// Lazy: react-pdf (pdf.js) and papaparse are the two heaviest dependencies
-// here — only worth downloading when a PDF/CSV is actually being previewed.
+// 懒加载：react-pdf（pdf.js）和 papaparse 是这里最重的两个依赖——只有真正
+// 预览 PDF/CSV 时才值得下载它们。
 const PdfPreview = lazy(() => import('./PdfPreview').then((m) => ({ default: m.PdfPreview })))
 const CsvPreview = lazy(() => import('./CsvPreview').then((m) => ({ default: m.CsvPreview })))
 

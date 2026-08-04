@@ -17,9 +17,9 @@ export function FilePreviewDialog({
   const [render, setRender] = useState(open)
   const backdropRef = useRef<HTMLDivElement>(null)
   const cardRef = useRef<HTMLDivElement>(null)
-  // Keeps rendering the last non-null file while the close animation plays —
-  // `file` itself goes null immediately on close, but the exit timeline
-  // needs a moment before unmounting (mirrors DocumentPreviewDialog).
+  // 在关闭动画播放期间持续渲染最后一个非空的 file——
+  // `file` 本身在关闭时会立刻变为 null，但退场时间线
+  // 需要一点时间才会真正卸载（与 DocumentPreviewDialog 的做法一致）。
   const lastFile = useRef(file)
   if (file) lastFile.current = file
 
@@ -55,8 +55,8 @@ export function FilePreviewDialog({
   }, [open, onClose])
 
   const current = lastFile.current
-  // Rebuilt only when the artifact id changes — a fresh resolveUrl on every
-  // re-render would make FilePreview refetch the presigned URL constantly.
+  // 仅在 artifact id 变化时才重新构建——如果每次渲染都生成新的 resolveUrl，
+  // 会导致 FilePreview 不断重新获取预签名 URL。
   const source = useMemo(
     () => (current ? { name: current.name, mimeType: current.mimeType, resolveUrl: () => getArtifactRawUrl(current.id) } : null),
     [current],

@@ -1,8 +1,8 @@
 import type OpenAI from 'openai'
 
-// The actual deliverable — content goes straight to the frontend as a
-// `document` SSE event (see loop.ts), not to the ephemeral sandbox
-// filesystem, so it's still there after the request ends.
+// 真正的交付物——内容会直接以 `document` SSE 事件的形式发给前端
+// （参见 loop.ts），而不是写入临时的沙箱文件系统，所以请求结束后
+// 内容依然存在。
 export const documentTools: OpenAI.Chat.ChatCompletionTool[] = [
   {
     type: 'function',

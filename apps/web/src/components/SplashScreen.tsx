@@ -2,10 +2,9 @@ import { useLayoutEffect, useRef } from 'react'
 import { gsap } from 'gsap'
 import { BrandMark } from '@/components/BrandMark'
 
-// Shown full-screen for the one moment nothing else has rendered yet — the
-// initial auth check before the app knows whether to show the login form or
-// the console. First impression, so it gets the brand mark instead of a
-// generic spinner.
+// 在其他内容都还没渲染出来的那一刻全屏展示——即应用还不知道该显示登录表单
+// 还是控制台之前的初始鉴权检查阶段。作为用户的第一印象，这里用品牌标识
+// 而不是普通的加载动画。
 export function SplashScreen() {
   const iconWrapRef = useRef<HTMLDivElement>(null)
   const glowRef = useRef<HTMLDivElement>(null)

@@ -8,22 +8,20 @@ import { getArtifactRawUrl } from '@/lib/artifacts-api'
 import { getToolResultComponent, TOOL_META, toolSummary } from '@/lib/tool-meta'
 import { FilePreview } from './file-preview/FilePreview'
 
-// Mirrors Sidebar.tsx's dual-mode CSS almost exactly, just mirrored to the
-// right side: mobile is a fixed-position drawer that slides in via
-// translate-x (content underneath never reflows); desktop (md+) is back to
-// an in-flow panel whose *width* animates, pushing the chat column instead
-// of covering it.
+// 几乎完全镜像了 Sidebar.tsx 的双模式 CSS，只是镜像到了右侧：
+// 移动端是通过 translate-x 滑入的固定定位抽屉（下方内容不会重排）；
+// 桌面端（md 及以上）则回到文档流内的面板，通过 *宽度* 变化来推动
+// 聊天列，而不是遮盖它。
 const EASE = 'ease-[cubic-bezier(0.16,1,0.3,1)]'
 const PANEL_WIDTH = 'md:w-[440px]'
 
 export function PreviewPanel({ panel, blocks }: { panel: PreviewPanelController; blocks: Block[] }) {
   const { target, collapsed, close } = panel
 
-  // Looked up live, every render — never a captured snapshot. A running
-  // tool's block mutates in place as output arrives (see
-  // useConsoleSession's finishTool); if this held a copy from whenever the
-  // panel opened, the user would watch a frozen snapshot instead of the
-  // live result.
+  // 每次渲染都实时查找——绝不是保存的快照。运行中工具的 block 会随着
+  // 输出到达而原地变化（见 useConsoleSession 的 finishTool）；如果这里
+  // 保存的是面板打开那一刻的副本，用户看到的就会是一份冻结的快照，
+  // 而不是实时结果。
   const toolBlock =
     target?.kind === 'tool' ? (blocks.find((b) => b.kind === 'tool' && b.id === target.id) as
         | Extract<Block, { kind: 'tool' }>
@@ -49,8 +47,8 @@ export function PreviewPanel({ panel, blocks }: { panel: PreviewPanelController;
 
   return (
     <>
-      {/* Mobile-only overlay, same treatment as Sidebar's backdrop — always
-          mounted so its fade plays on close too, not just on open. */}
+      {/* 仅移动端使用的遮罩层，处理方式与 Sidebar 的背景遮罩相同——始终
+          挂载，这样关闭时也能播放淡出动画，而不是只有打开时才有效果。 */}
       <div
         aria-hidden
         onClick={close}

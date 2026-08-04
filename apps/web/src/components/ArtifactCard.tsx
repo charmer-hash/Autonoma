@@ -21,10 +21,9 @@ export function ArtifactCard({
   const url = `${API_URL}/api/artifacts/${block.id}`
   const previewable = pickPreviewKind(block.mimeType, block.name) !== 'unsupported'
 
-  // Desktop: the right-side panel has room to sit alongside the chat, so
-  // previews go there. Mobile: the panel (like Sidebar) is a full overlay
-  // drawer, and stacking that on top of a preview would be one overlay too
-  // many on a small screen — keep the centered modal there instead.
+  // 桌面端：右侧面板有足够空间与聊天区并排显示，所以预览放在那里。
+  // 移动端：面板（和 Sidebar 一样）是一个全屏覆盖式抽屉，在预览上再叠一层
+  // 覆盖层在小屏幕上会显得多余——所以移动端仍使用居中弹窗展示。
   function openPreview() {
     if (isMobile) setPreviewOpen(true)
     else panel.open({ kind: 'artifact', id: block.id })

@@ -4,10 +4,9 @@ import { cleanSnippet, hostname, parseResult } from '@/lib/format'
 
 type SearchResult = { title: string; url: string; snippet: string }
 
-// No `variant` handling needed — this result is already a plain list, never
-// height-capped like the *pre*-based results, so "compact" and "full" look
-// identical. Still typed as ToolResultProps so it satisfies
-// getToolResultComponent's shared return type.
+// 不需要处理 `variant`——这个结果本身就是普通列表，不像基于 *pre* 的结果那样
+// 会有高度限制，所以 "compact" 和 "full" 看起来是一样的。这里仍然使用
+// ToolResultProps 类型，是为了满足 getToolResultComponent 共用的返回类型。
 export function WebSearchResult({ block }: ToolResultProps) {
   const result = parseResult<{ error?: string; results?: SearchResult[] }>(block.result)
 

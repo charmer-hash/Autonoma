@@ -28,7 +28,7 @@ export function LoginPage({ onSuccess }: { onSuccess: () => void }) {
         return
       }
 
-      // Entrance: card settles in, then its contents stagger up after it.
+      // 入场动画：卡片先落定，然后其内容依次错落浮现。
       gsap
         .timeline()
         .from(cardRef.current, { opacity: 0, y: 28, scale: 0.96, duration: 0.7, ease: 'power3.out' })
@@ -38,8 +38,8 @@ export function LoginPage({ onSuccess }: { onSuccess: () => void }) {
           '-=0.35',
         )
 
-      // Aurora blobs drift slowly and independently — keeps the background alive
-      // without drawing attention away from the form.
+      // 极光光斑各自缓慢漂移——让背景保持生动，同时又不会把注意力
+      // 从表单上吸引走。
       blobs.forEach((blob, i) => {
         gsap.to(blob, {
           x: gsap.utils.random(-50, 50),
@@ -51,7 +51,7 @@ export function LoginPage({ onSuccess }: { onSuccess: () => void }) {
         })
       })
 
-      // A light sweep across the primary button, on a loop with a pause between passes.
+      // 一道光扫过主按钮，循环播放，每次扫过之间有一段停顿。
       gsap.set(shineRef.current, { xPercent: -150 })
       gsap.to(shineRef.current, {
         xPercent: 250,

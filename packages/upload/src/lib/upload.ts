@@ -3,7 +3,7 @@ import type { PresignedUpload, PresignedUploadRequest } from '@autonoma/shared'
 export type UploadProgress = { loaded: number; total: number; percent: number }
 
 export type UploadRules = {
-  // MIME patterns, e.g. ['image/*', 'application/pdf']. Undefined = any type.
+  // MIME 匹配模式，例如 ['image/*', 'application/pdf']。未定义表示任意类型。
   accept?: string[]
   maxSizeBytes?: number
 }
@@ -36,34 +36,33 @@ export type UploadOptions = {
   signal?: AbortSignal
 }
 
-// `url` is the presigned PUT URL that was used, echoed back mostly for
-// debugging — it's single-use and expired by the time upload() resolves, not
-// a fetchable link. Optional because the multipart adapter (multipart.ts)
-// has no single URL to report — each part had its own.
+// `url` 是当时使用的预签名 PUT URL，回传主要是为了方便调试——它是一次性
+// 的，等 upload() resolve 时已经过期了，并不是一个可再次访问的链接。
+// 之所以是可选项，是因为分片上传适配器（multipart.ts）没有单一的 URL
+// 可以回传——每个分片都有自己的 URL。
 export type UploadResult = { key: string; url?: string }
 
-// Abstracts "how a file actually gets uploaded" behind one method, so call
-// sites (a future dropzone, an attach-file button, etc.) depend on this
-// shape rather than on R2/XHR specifics. Swapping the storage backend later
-// means writing a new adapter, not touching every call site.
+// 把"文件到底是怎么上传的"这件事抽象到一个方法背后，这样调用方（未来的
+// 拖拽上传区、附件按钮等）依赖的是这个统一的接口形状，而不是 R2/XHR 的
+// 具体实现细节。以后要换存储后端，只需要写一个新的适配器，不用改动每
+// 个调用点。
 export interface UploadAdapter {
   upload(file: File, options?: UploadOptions): Promise<UploadResult>
 }
 
 export type R2UploadAdapterOptions = {
-  // Injected rather than hardcoded to a path: minting the presigned URL
-  // needs app-specific auth/fetch wiring (cookies, API base URL — see
-  // apps/web/src/lib/api-client.ts) that this package doesn't know about.
-  // The caller supplies it once an /api/uploads-style endpoint exists
-  // server-side; this adapter only owns the "PUT the bytes, report
-  // progress, allow cancellation" part.
+  // 以注入方式传入，而不是写死某个路径：生成预签名 URL 需要应用自身的
+  // 鉴权/请求配置（cookies、API 基础地址——见 apps/web/src/lib/api-client.ts），
+  // 这些都不是本包应该知道的。等服务端有了类似 /api/uploads 的接口后，
+  // 由调用方提供这个函数；这个适配器只负责"PUT 字节数据、上报进度、
+  // 支持取消"这部分。
   getUploadUrl: (req: PresignedUploadRequest) => Promise<PresignedUpload>
   validation?: UploadRules
 }
 
-// Cloudflare R2 is S3-compatible: a presigned PUT URL takes the raw file
-// body directly, no multipart/form-data envelope (mirrors the presigned GET
-// in apps/server/src/lib/storage.ts).
+// Cloudflare R2 兼容 S3：预签名的 PUT URL 直接接收原始文件内容，不需要
+// multipart/form-data 包装（与 apps/server/src/lib/storage.ts 中的预签名
+// GET 用法对应）。
 export function createR2UploadAdapter(opts: R2UploadAdapterOptions): UploadAdapter {
   return {
     async upload(file, options) {
@@ -75,9 +74,9 @@ export function createR2UploadAdapter(opts: R2UploadAdapterOptions): UploadAdapt
   }
 }
 
-// XMLHttpRequest, not fetch: fetch has no upload-progress event, and
-// AbortController alone can't cancel a fetch body stream reliably across
-// browsers the way xhr.abort() does.
+// 用 XMLHttpRequest 而不是 fetch：fetch 没有上传进度事件，而且单靠
+// AbortController 并不能像 xhr.abort() 那样在各浏览器中都可靠地取消
+// fetch 的请求体流。
 function putWithProgress(url: string, file: File, options?: UploadOptions): Promise<void> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()

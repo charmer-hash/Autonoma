@@ -40,9 +40,9 @@ export function hostname(url: string): string {
   }
 }
 
-// Search snippets are raw scraped page text — often full of markdown tables,
-// headings, and list bullets. Strip that down to plain prose so the preview
-// reads like a sentence instead of leaking "| --- |" table syntax.
+// 搜索摘要是从页面抓取的原始文本——经常充斥着 markdown 表格、标题和
+// 列表项符号。把这些去掉、只保留纯文本，这样预览读起来像一句话，
+// 而不会漏出 "| --- |" 这种表格语法。
 export function cleanSnippet(text: string): string {
   const prose = text
     .split('\n')

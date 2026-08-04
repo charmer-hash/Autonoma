@@ -5,11 +5,11 @@ import { cn } from '@autonoma/ui/lib/utils'
 import { BrandMark } from '@/components/BrandMark'
 import { formatRelativeTime } from '@/lib/format'
 
-// Varied widths so the skeleton reads as placeholder text rather than a
-// suspiciously uniform grid of bars.
+// 使用不同的宽度，让骨架屏看起来像占位文字，
+// 而不是一堆宽度可疑地整齐划一的横条。
 const SKELETON_ROWS = [78, 55, 68, 45]
 
-// Left rail: session list + agent config.
+// 左侧栏：会话列表 + agent 配置。
 export function Sidebar({
   collapsed,
   sessions,
@@ -29,18 +29,16 @@ export function Sidebar({
   onSelectSession: (id: string) => void
   onClose: () => void
 }) {
-  // Same "expo out" curve as the drawer/panel transition below, so the
-  // backdrop's fade and the sidebar's slide land in sync instead of one
-  // visibly lagging the other.
+  // 与下方抽屉/面板过渡动画相同的 “expo out” 曲线，这样背景遮罩的
+  // 淡入淡出和侧边栏的滑动能保持同步，而不会出现一方明显滞后于另一方。
   const EASE = 'ease-[cubic-bezier(0.16,1,0.3,1)]'
 
   return (
     <>
-      {/* Below `md`, the sidebar overlays the console instead of squeezing it
-          into a sliver — this backdrop is what makes it dismissible by tapping
-          outside, same as any mobile drawer. Always mounted (never
-          conditionally rendered) so its fade can play on the way out too,
-          not just snap away the instant `collapsed` flips. */}
+      {/* 在小于 `md` 的屏幕上，侧边栏是覆盖在控制台上方的，而不是把它挤压
+          成一条窄缝——这个背景遮罩就是让点击外部区域可以关闭侧边栏的原因，
+          和其他移动端抽屉的行为一致。始终挂载（而不是条件渲染），
+          这样退场时也能播放淡出动画，而不是 `collapsed` 一变就瞬间消失。 */}
       <div
         aria-hidden
         onClick={onClose}
@@ -52,12 +50,12 @@ export function Sidebar({
       <aside
         className={cn(
           `flex shrink-0 flex-col overflow-hidden border-r bg-sidebar text-sidebar-foreground transition-transform duration-300 ${EASE}`,
-          // Mobile: fixed-position drawer that slides in/out (width stays
-          // constant so content never reflows underneath it).
+          // 移动端：固定定位的抽屉，滑入滑出（宽度保持不变，
+          // 这样下方内容不会被重排）。
           'fixed inset-y-0 left-0 z-40 w-64 max-w-[80vw]',
           collapsed ? '-translate-x-full' : 'translate-x-0',
-          // Desktop (md+): back to an in-flow panel whose width animates,
-          // pushing the console instead of overlaying it.
+          // 桌面端（md 及以上）：回到文档流内的面板，宽度变化会
+          // 推动控制台区域，而不是覆盖在它上面。
           `md:static md:z-auto md:translate-x-0 md:transition-[width] md:duration-300 ${EASE}`,
           collapsed ? 'md:w-0 md:border-r-0' : 'md:w-64',
         )}

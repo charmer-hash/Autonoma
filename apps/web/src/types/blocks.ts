@@ -1,11 +1,10 @@
 export type MessageAttachment = { filename: string; mimeType: string; size: number }
 
 export type Block =
-  // attachments is only ever populated for the live-just-sent bubble (see
-  // useConsoleSession's run()) — a reloaded/historical session has no way to
-  // recover it, since the persisted message content only carries a plain-text
-  // note about the upload, not structured data. See apps/server/src/index.ts's
-  // attachFilesToSandbox.
+  // attachments 只会在刚发送出去的实时气泡中被填充（见 useConsoleSession
+  // 的 run()）——重新加载的/历史会话无法恢复它，因为持久化的消息内容
+  // 只携带一段关于上传的纯文本说明，而非结构化数据。参见
+  // apps/server/src/index.ts 的 attachFilesToSandbox。
   | { kind: 'user'; text: string; attachments?: MessageAttachment[] }
   | { kind: 'text'; text: string }
   | { kind: 'tool'; id: string; name: string; args: unknown; result?: string; status: 'running' | 'done' }

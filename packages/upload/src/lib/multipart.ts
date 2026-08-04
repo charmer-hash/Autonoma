@@ -7,34 +7,33 @@ import type {
 } from '@autonoma/shared'
 import { validateFile, type UploadAdapter, type UploadResult, type UploadRules } from './upload'
 
-// R2/S3 reject any non-final part smaller than 5MB.
+// R2/S3 会拒绝任何小于 5MB 的非最后一个分片。
 const MIN_PART_BYTES = 5 * 1024 * 1024
 const DEFAULT_PART_BYTES = 8 * 1024 * 1024
 const DEFAULT_CONCURRENCY = 4
 const DEFAULT_MAX_RETRIES_PER_PART = 3
 
 export type R2MultipartUploadAdapterOptions = {
-  // Same "inject the backend calls" reasoning as R2UploadAdapterOptions in
-  // upload.ts: minting these needs the app's own auth/fetch wiring, which
-  // this package doesn't know about. abortUpload is optional but strongly
-  // recommended — without it, a cancelled or failed upload leaves orphaned
-  // parts billed against your R2 bucket until a lifecycle rule sweeps them.
+  // 和 upload.ts 中 R2UploadAdapterOptions 一样的"注入后端调用"思路：
+  // 生成这些请求需要应用自身的鉴权/请求配置，而这些不是本包应该知道的。
+  // abortUpload 是可选的，但强烈建议提供——如果不提供，取消或失败的
+  // 上传会留下孤立的分片，一直计入你的 R2 存储桶账单，直到生命周期
+  // 规则把它们清理掉。
   createUpload: (req: MultipartCreateRequest) => Promise<MultipartCreateResponse>
   getPartUrl: (req: MultipartPartUrlRequest) => Promise<{ url: string }>
   completeUpload: (req: MultipartCompleteRequest) => Promise<void>
   abortUpload?: (req: { key: string; uploadId: string }) => Promise<void>
   validation?: UploadRules
-  // Must stay >= MIN_PART_BYTES; the last part is exempt from the minimum.
+  // 必须保持 >= MIN_PART_BYTES；最后一个分片不受此下限约束。
   partSizeBytes?: number
   concurrency?: number
   maxRetriesPerPart?: number
 }
 
-// Splits a file into parts, uploads them straight to R2 (one presigned URL
-// per part, browser -> R2 direct — the backend never sees the bytes, same
-// as the single-shot adapter), then asks the backend to assemble them.
-// Exposes the exact same UploadAdapter shape as createR2UploadAdapter, so a
-// caller (or useFileUpload) doesn't need to know which one it's holding.
+// 把文件切成若干分片，直接上传到 R2（每个分片一个预签名 URL，浏览器
+// 直连 R2——后端不会经手这些字节，和单次上传适配器一致），再让后端
+// 把这些分片拼装起来。暴露的 UploadAdapter 形状和 createR2UploadAdapter
+// 完全一样，所以调用方（或 useFileUpload）不需要知道自己拿到的是哪一种。
 export function createR2MultipartUploadAdapter(opts: R2MultipartUploadAdapterOptions): UploadAdapter {
   const partSizeBytes = Math.max(opts.partSizeBytes ?? DEFAULT_PART_BYTES, MIN_PART_BYTES)
   const concurrency = Math.max(1, opts.concurrency ?? DEFAULT_CONCURRENCY)
@@ -46,10 +45,9 @@ export function createR2MultipartUploadAdapter(opts: R2MultipartUploadAdapterOpt
       const chunks = splitIntoChunks(file, partSizeBytes)
       const { key, uploadId } = await opts.createUpload({ filename: file.name, mimeType: file.type, size: file.size })
 
-      // Linked to the caller's signal, but we also trip it ourselves the
-      // moment any one part permanently fails — no point letting the other
-      // in-flight parts keep burning bandwidth on an upload whose
-      // completeUpload call is doomed anyway.
+      // 与调用方传入的 signal 关联，但一旦有任何一个分片彻底失败，我们
+      // 也会自己触发它——反正这次上传最终的 completeUpload 调用注定
+      // 会失败，没必要让其他正在进行中的分片继续白白消耗带宽。
       const internal = new AbortController()
       if (options?.signal?.aborted) internal.abort()
       options?.signal?.addEventListener('abort', () => internal.abort(), { once: true })
@@ -122,8 +120,8 @@ function splitIntoChunks(file: File, partSizeBytes: number): Blob[] {
   for (let start = 0; start < file.size; start += partSizeBytes) {
     chunks.push(file.slice(start, start + partSizeBytes))
   }
-  // A 0-byte file still needs exactly one (empty) part — R2 rejects a
-  // multipart upload completed with zero parts.
+  // 0 字节的文件也必须恰好有一个（空的）分片——R2 会拒绝以零个分片
+  // 完成的分片上传。
   return chunks.length > 0 ? chunks : [file.slice(0, 0)]
 }
 
@@ -141,15 +139,15 @@ async function uploadPartWithRetry(
 ): Promise<string> {
   for (let attempt = 0; ; attempt++) {
     if (ctx.signal.aborted) throw new DOMException('上传已取消。', 'AbortError')
-    // Re-minted on every retry, not reused — a presigned URL can itself
-    // expire mid-upload on a slow/flaky connection.
+    // 每次重试都重新生成，而不是复用——在网速慢或不稳定的连接下，
+    // 预签名 URL 本身也可能在上传过程中过期。
     const { url } = await ctx.getPartUrl({ key: ctx.key, uploadId: ctx.uploadId, partNumber: index + 1 })
     try {
       return await putPart(url, chunk, ctx.signal, ctx.onPartProgress)
     } catch (err) {
       const isAbort = err instanceof DOMException && err.name === 'AbortError'
       if (isAbort || attempt >= ctx.maxRetries) throw err
-      ctx.onPartProgress(0) // this part's bytes didn't land — don't leave stale progress counted in
+      ctx.onPartProgress(0) // 这个分片的数据没有传成功——不要把过时的进度继续算在内
     }
   }
 }
@@ -168,10 +166,10 @@ function putPart(url: string, chunk: Blob, signal: AbortSignal, onProgress: (loa
         reject(new Error(`分片上传失败：${xhr.status} ${xhr.statusText}`))
         return
       }
-      // R2/S3 must echo this back verbatim in completeUpload's part list.
-      // The bucket's CORS config needs `ExposeHeaders: ["ETag"]` or the
-      // browser silently can't read it cross-origin (fetch/XHR strip
-      // unlisted response headers on cross-origin requests).
+      // R2/S3 要求在 completeUpload 的分片列表中原样回传这个值。
+      // 存储桶的 CORS 配置需要包含 `ExposeHeaders: ["ETag"]`，否则浏览器
+      // 会在跨域场景下悄悄读不到它（fetch/XHR 会剥离跨域响应中未列出的
+      // 响应头）。
       const etag = xhr.getResponseHeader('ETag')
       if (!etag) {
         reject(new Error('分片上传失败：响应缺少 ETag（请检查 R2 桶的 CORS ExposeHeaders 是否包含 ETag）。'))

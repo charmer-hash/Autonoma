@@ -7,10 +7,10 @@ export type FileUploadState =
   | { status: 'done'; result: UploadResult }
   | { status: 'error'; message: string }
 
-// Thin React wrapper around an UploadAdapter: tracks progress/error state and
-// owns the AbortController so a caller can cancel without threading one
-// through itself. Takes the adapter as a parameter (not a hardcoded R2 one)
-// so a component can swap in a mock adapter for tests.
+// 对 UploadAdapter 的一层轻量 React 封装：跟踪进度/错误状态，并持有
+// AbortController，让调用方无需自己维护一个即可取消上传。适配器以参数
+// 形式传入（而不是写死用 R2 的），这样组件在测试时可以换用一个 mock
+// 适配器。
 export function useFileUpload(adapter: UploadAdapter) {
   const [state, setState] = useState<FileUploadState>({ status: 'idle' })
   const controllerRef = useRef<AbortController | null>(null)

@@ -15,10 +15,9 @@ const VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov', 'mkv', 'avi'])
 const AUDIO_EXTENSIONS = new Set(['mp3', 'wav', 'm4a', 'ogg', 'flac'])
 const TEXT_EXTENSIONS = new Set(['txt', 'md', 'json', 'log', 'yaml', 'yml', 'xml'])
 
-// Trusts mimeType first (it's what the server/agent actually recorded), and
-// only falls back to sniffing the filename's extension when mimeType is
-// missing/generic (application/octet-stream) — e.g. a browser upload whose
-// reported type was empty.
+// 优先信任 mimeType（这是服务端/agent 实际记录下来的），只有当 mimeType
+// 缺失或是通用类型（application/octet-stream）时，才回退到通过文件名后缀
+// 来嗅探类型——比如浏览器上传时报告的类型为空的情况。
 export function pickPreviewKind(mimeType: string, filename: string): PreviewKind {
   if (mimeType.startsWith('image/')) return 'image'
   if (mimeType === 'application/pdf') return 'pdf'

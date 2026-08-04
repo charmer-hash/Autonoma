@@ -2,44 +2,17 @@ import type OpenAI from 'openai'
 import type { Sandbox } from 'e2b'
 import { insertArtifact } from '../../db/artifacts.js'
 import { uploadArtifact } from '../../lib/storage.js'
+import { guessMimeType } from '../../lib/mime.js'
 
 const MAX_ARTIFACT_BYTES = 20 * 1024 * 1024 // 20MB
 
-const EXTENSION_MIME_TYPES: Record<string, string> = {
-  png: 'image/png',
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-  gif: 'image/gif',
-  webp: 'image/webp',
-  svg: 'image/svg+xml',
-  pdf: 'application/pdf',
-  csv: 'text/csv',
-  json: 'application/json',
-  txt: 'text/plain',
-  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  xls: 'application/vnd.ms-excel',
-  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-  ppt: 'application/vnd.ms-powerpoint',
-  md: 'text/markdown',
-  zip: 'application/zip',
-  mp3: 'audio/mpeg',
-  mp4: 'video/mp4',
-}
-
-function guessMimeType(filename: string): string {
-  const ext = filename.split('.').pop()?.toLowerCase() ?? ''
-  return EXTENSION_MIME_TYPES[ext] ?? 'application/octet-stream'
-}
-
-// Surfaces a file the agent generated inside its sandbox (chart, PDF, xlsx,
-// csv, zip, ...) as a downloadable/previewable artifact. Complements
-// write_document: that tool is for Markdown text the model composes itself;
-// this one is for binary/non-Markdown files produced by code the model ran
-// via run_command/write_file. The uploaded bytes never go back into the
-// conversation sent to the LLM — only a small metadata JSON does (see
-// loop.ts's isArtifact handling) — so a multi-MB image doesn't get
-// re-transmitted to the model on every subsequent turn.
+// 把 agent 在沙箱里生成的文件（图表、PDF、xlsx、csv、zip 等）
+// 展示为可下载/预览的 artifact。与 write_document 互补：
+// 那个工具用于模型自己撰写的 Markdown 文本；这个工具用于模型
+// 通过 run_command/write_file 运行代码所产出的二进制/非 Markdown
+// 文件。上传的字节内容永远不会再被送回发给 LLM 的对话记录——
+// 只有一小段元数据 JSON 会（参见 loop.ts 里对 isArtifact 的处理），
+// 这样一张几 MB 的图片就不会在后续每一轮都被重新传给模型。
 export function createArtifactTools(
   sandbox: Sandbox,
   sessionId: string,
@@ -82,10 +55,9 @@ export function createArtifactTools(
         bytes = await sandbox.files.read(sandboxPath, { format: 'bytes', requestTimeoutMs: 60_000 })
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
-        // A stale path from an earlier turn's sandbox is the single most
-        // common cause of this — spell it out so the model self-corrects
-        // (re-run the generating code, then retry) instead of just reporting
-        // a confusing "file not found" to the user.
+        // 最常见的原因是路径来自之前某轮沙箱、现在已经失效——
+        // 把这一点写清楚，让模型能自我纠正（重新执行生成代码后再重试），
+        // 而不是只给用户报一个令人困惑的"文件不存在"。
         const hint = /does not exist|no such file/i.test(message)
           ? '（沙箱是每次对话请求新建的，之前轮次生成的文件不会保留到这一轮——如果这个路径是更早的消息里生成的，需要用 run_command/write_file 重新生成一次，再调用 export_artifact。）'
           : ''

@@ -25,19 +25,17 @@ export function Console({ onLogout }: { onLogout: () => void }) {
   } = useConsoleSession();
 
   const isMobile = useIsMobile();
-  // On mobile the sidebar is an overlay drawer, so it should start closed;
-  // on desktop it's an in-flow panel that starts open. Only the *initial*
-  // value comes from isMobile — later viewport changes don't fight the
-  // user's own toggle.
+  // 在移动端，侧边栏是一个覆盖式抽屉，所以应该以关闭状态开始；
+  // 在桌面端，它是一个常驻面板，默认是打开的。只有*初始*值来自
+  // isMobile——之后视口的变化不会与用户自己的切换操作相冲突。
   const [sidebarCollapsed, setSidebarCollapsed] = useState(isMobile);
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const panel = usePreviewPanel();
 
-  // Auto-open the panel the instant a tool call starts running, so watching
-  // the agent work doesn't require clicking anything. Guarded by id so a
-  // re-render of the same still-running block doesn't re-trigger this, and
-  // by usePreviewPanel's own allowAutoOpen so a panel the user just closed
-  // doesn't immediately reopen for the next tool call in the same run.
+  // 一旦某个工具调用开始运行就立刻自动打开面板，这样观察 agent 工作
+  // 就不需要点击任何东西。用 id 做保护，防止同一个仍在运行的 block
+  // 重新渲染时重复触发；同时依赖 usePreviewPanel 自身的 allowAutoOpen，
+  // 防止用户刚关闭的面板在同一次运行的下一个工具调用时立刻重新打开。
   const lastAutoOpenedToolId = useRef<string | undefined>(undefined);
   useEffect(() => {
     const last = blocks[blocks.length - 1];
@@ -45,13 +43,13 @@ export function Console({ onLogout }: { onLogout: () => void }) {
       lastAutoOpenedToolId.current = last.id;
       panel.autoOpen({ kind: "tool", id: last.id });
     }
-    // panel's methods only ever call setState — behaviorally identical
-    // across renders, so omitting it here doesn't risk a stale closure.
+    // panel 的方法只会调用 setState——在各次渲染中行为都是一样的，
+    // 所以在这里省略它不会有闭包过期的风险。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [blocks]);
 
-  // A fresh turn gets its own chance to auto-open, even if the user
-  // dismissed the panel partway through the previous one.
+  // 新的一轮对话会重新获得自动打开的机会，即使用户在上一轮进行到
+  // 一半时关闭了面板。
   const wasRunning = useRef(running);
   useEffect(() => {
     if (running && !wasRunning.current) panel.resetAutoOpen();
@@ -69,9 +67,9 @@ export function Console({ onLogout }: { onLogout: () => void }) {
     localStorage.setItem("theme", next);
   }
 
-  // On mobile the sidebar is an overlay covering the console, so picking a
-  // session (or starting a new one) should also dismiss it — on desktop it's
-  // an in-flow panel the user explicitly toggles, so leave it alone there.
+  // 在移动端，侧边栏是覆盖在控制台上方的浮层，所以选择一个会话（或
+  // 新建一个会话）时也应该把它关闭——在桌面端它是用户手动切换的
+  // 常驻面板，所以在那里保持原样不动。
   function handleNewSessionMobileAware() {
     handleNewSession();
     if (isMobile) setSidebarCollapsed(true);

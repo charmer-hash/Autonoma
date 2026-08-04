@@ -16,14 +16,13 @@ import {
   getUploadUrl,
 } from '@/lib/uploads-api'
 
-// A larger file is still technically uploadable (multipart has no real
-// ceiling), but the server has to pull the whole thing into the sandbox
-// before the agent can use it — this is the product-level cap for "a file
-// meant to be read/processed by the agent", not a storage/transport limit.
+// 更大的文件在技术上依然可以上传（分片上传本身没有真正的上限），
+// 但服务端要先把整个文件拉进沙箱 agent 才能使用它——这是产品层面
+// 针对“供 agent 读取/处理的文件”设定的上限，而不是存储或传输层的限制。
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 
-// Built once — none of these calls depend on component state/props, so
-// there's no reason to recreate the adapter on every render.
+// 只构建一次——这些调用都不依赖组件的 state/props，
+// 没有理由在每次渲染时都重新创建 adapter。
 const uploadAdapter = createR2AutoUploadAdapter({
   single: { getUploadUrl, validation: { maxSizeBytes: MAX_UPLOAD_BYTES } },
   multipart: {
@@ -85,7 +84,7 @@ export function Composer({
         .upload(file, { signal: controller.signal, onProgress: (p) => updateAttachment(id, { progress: p.percent }) })
         .then((result) => updateAttachment(id, { status: 'done', key: result.key, progress: 100 }))
         .catch((err) => {
-          if (err instanceof DOMException && err.name === 'AbortError') return // removed by the user already
+          if (err instanceof DOMException && err.name === 'AbortError') return // 已被用户移除，无需处理
           const message = err instanceof UploadValidationError || err instanceof Error ? err.message : '上传失败。'
           updateAttachment(id, { status: 'error', error: message })
         })
@@ -96,9 +95,9 @@ export function Composer({
   function handleRunClick() {
     if (running || uploading) return
     if (!task.trim()) {
-      // Enter/click with nothing typed — there's nothing to send, but a
-      // silent no-op reads as broken. A quick shake says "I heard you, but
-      // there's nothing here" without needing a toast for it.
+      // 没有输入任何内容就按下 Enter 或点击——没有可发送的内容，
+      // 但如果什么反应都没有会显得像是坏了。一个快速的抖动动画可以
+      // 传达“我收到了，但这里没有内容”，而不需要额外弹一个提示框。
       if (cardRef.current) {
         gsap.fromTo(
           cardRef.current,

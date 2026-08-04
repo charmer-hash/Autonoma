@@ -11,11 +11,10 @@ export type SessionAccess = 'owned' | 'forbidden' | 'not_found'
 export type SessionSummary = { id: string; updatedAt: Date; preview: string | null }
 
 export async function listSessions(ownerId: string | undefined, limit = 50): Promise<SessionSummary[]> {
-  // Written with an explicit alias/table-qualified `sessions.id` rather than
-  // interpolating drizzle column objects — interpolating them here rendered
-  // unqualified column names, which inside this correlated subquery resolved
-  // to messages.id (bigint) instead of the outer sessions.id (text) and blew
-  // up with "operator does not exist: text = bigint".
+  // 这里显式使用带表名限定的 `sessions.id`，而不是直接插值 drizzle 的
+  // column 对象 —— 在这里插值会渲染出不带表限定的列名，在这个相关子查询中
+  // 会被解析成 messages.id（bigint）而不是外层的 sessions.id（text），
+  // 从而报错 "operator does not exist: text = bigint"。
   const previewExpr = sql<string | null>`(
     select msg.message->>'content' from messages msg
     where msg.session_id = sessions.id and msg.message->>'role' = 'user'
@@ -31,9 +30,9 @@ export async function listSessions(ownerId: string | undefined, limit = 50): Pro
   )
 }
 
-// Callers must check this before calling loadSessionMessages with a
-// client-supplied sessionId — this function itself doesn't re-check, it
-// trusts the caller already resolved 'owned'/'not_found'.
+// 调用方必须在用客户端提供的 sessionId 调用 loadSessionMessages 之前
+// 先检查这个函数的返回值 —— 这个函数本身不会重复检查，
+// 它信任调用方已经确认过结果是 'owned'/'not_found'。
 export async function resolveSessionAccess(
   sessionId: string,
   ownerId: string | undefined,
@@ -47,9 +46,9 @@ export async function resolveSessionAccess(
   return 'forbidden'
 }
 
-// Tolerates a session row that doesn't exist yet (brand-new sessionId,
-// nothing persisted until loadSessionMessagesForAgent's first touch) —
-// returns null rather than throwing, same as "no sandbox to reconnect to".
+// 容忍会话行尚不存在的情况（全新的 sessionId，
+// 在 loadSessionMessagesForAgent 首次写入之前不会有任何持久化数据）——
+// 返回 null 而不是抛错，效果等同于"没有可重连的沙箱"。
 export async function getSandboxId(sessionId: string): Promise<string | null> {
   const rows = await withRetry(() =>
     db.select({ sandboxId: sessions.sandboxId }).from(sessions).where(eq(sessions.id, sessionId)).limit(1),
@@ -57,17 +56,16 @@ export async function getSandboxId(sessionId: string): Promise<string | null> {
   return rows[0]?.sandboxId ?? null
 }
 
-// Callers must only call this once the session row is known to exist (e.g.
-// after loadSessionMessagesForAgent) — this is a plain UPDATE, not an
-// upsert, and silently affects zero rows otherwise.
+// 调用方只能在确认会话行已经存在时才调用这个函数（例如
+// 在 loadSessionMessagesForAgent 之后）—— 这只是一次普通的 UPDATE，
+// 不是 upsert，否则会在什么都没匹配到的情况下悄悄地影响零行。
 export async function setSandboxId(sessionId: string, sandboxId: string): Promise<void> {
   await withRetry(() => db.update(sessions).set({ sandboxId }).where(eq(sessions.id, sessionId)))
 }
 
-// Shared by both loadSessionMessages and loadSessionMessagesForAgent —
-// queries every row for a session (including its id, needed for compaction
-// bookkeeping), seeding a brand-new session with the system prompt on first
-// touch.
+// 被 loadSessionMessages 和 loadSessionMessagesForAgent 共用 ——
+// 查询一个会话的所有行（包括其 id，压缩记账时需要用到），
+// 在首次访问时用系统提示词为全新会话做初始化。
 async function loadMessageRows(sessionId: string, ownerId: string | undefined): Promise<MessageRow[]> {
   const rows = await withRetry(() =>
     db
@@ -79,7 +77,7 @@ async function loadMessageRows(sessionId: string, ownerId: string | undefined): 
 
   if (rows.length > 0) return rows
 
-  // Unseen sessionId — create the session row and seed it with the system prompt.
+  // 未见过的 sessionId —— 创建会话行，并用系统提示词进行初始化。
   const initial = createInitialMessages()
   await withRetry(() => db.insert(sessions).values({ id: sessionId, ownerId }).onConflictDoNothing())
   const [inserted] = await withRetry(() =>
@@ -91,11 +89,11 @@ async function loadMessageRows(sessionId: string, ownerId: string | undefined): 
   return [inserted]
 }
 
-// Full, uncompacted conversation history — used by GET /api/sessions/:id so
-// browsing an old session always shows the real original turns, never a
-// summary standing in for folded-away messages. Compaction (see
-// loadSessionMessagesForAgent) only changes what gets *sent to the model*;
-// it never deletes rows, so this always reflects everything that happened.
+// 完整、未压缩的对话历史 —— 供 GET /api/sessions/:id 使用，
+// 这样浏览一个旧会话时总能看到真实的原始对话轮次，
+// 而不会用摘要来代替被折叠掉的消息。压缩（参见
+// loadSessionMessagesForAgent）只改变*发送给模型*的内容；
+// 它从不删除行，所以这里始终反映实际发生过的一切。
 export async function loadSessionMessages(
   sessionId: string,
   ownerId: string | undefined,
@@ -104,10 +102,10 @@ export async function loadSessionMessages(
   return rows.map((row) => row.message)
 }
 
-// History to actually send to the LLM for a turn — same underlying data as
-// loadSessionMessages, but with older messages folded into a rolling
-// summary once the unfolded tail grows past a size threshold (see
-// agent/compaction.ts). Used by POST /api/agent/run only.
+// 一轮对话中实际发送给 LLM 的历史 —— 底层数据与
+// loadSessionMessages 相同，但一旦未折叠的尾部超过某个大小阈值，
+// 较旧的消息会被折叠进滚动摘要中（参见
+// agent/compaction.ts）。仅供 POST /api/agent/run 使用。
 export async function loadSessionMessagesForAgent(
   sessionId: string,
   ownerId: string | undefined,
@@ -142,9 +140,9 @@ export async function loadSessionMessagesForAgent(
       )
       tailRows = plan.keep
     } catch (err) {
-      // Best-effort: a compaction failure must not break the turn. Fall
-      // back to sending the full unfolded tail this time; we'll retry
-      // folding on a later call.
+      // 尽力而为：压缩失败不能导致这一轮对话中断。
+      // 这次退回到发送完整的未折叠尾部；
+      // 我们会在之后的调用中重试折叠。
       console.error('history compaction failed, sending full tail:', err)
     }
   }

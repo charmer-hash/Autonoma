@@ -16,6 +16,7 @@ import type {
   UploadedAttachment,
 } from '@autonoma/shared'
 import { runAgentLoop } from './agent/loop.js'
+import { MAX_VISION_IMAGE_BYTES, type PendingVisionImage } from './agent/tools/vision.js'
 import { authenticate, clearSession, createSession, getOwnerId, isAuthenticated, requireAuth } from './auth.js'
 import { getArtifactById } from './db/artifacts.js'
 import { runMigrations } from './db/migrate.js'
@@ -39,22 +40,23 @@ import {
 } from './lib/storage.js'
 import { withRetry } from './lib/retry.js'
 
-// No product feature calls these yet (see @autonoma/upload) — a generous
-// ceiling against abuse, not a real per-feature limit.
+// 目前还没有任何产品功能会调用这个上限（参见 @autonoma/upload）——
+// 这只是一个防滥用的宽松上限，并不是针对具体功能的真实限制。
 const MAX_UPLOAD_BYTES = 500 * 1024 * 1024
 
-// How long an idle sandbox is kept around for a session's next message to
-// reconnect to (see /api/agent/run) before e2b reaps it on its own. Reset on
-// every request that touches it, so an active back-and-forth keeps reusing
-// the same sandbox indefinitely; a session nobody returns to just expires.
+// 一个空闲沙箱会被保留多久，以便该会话的下一条消息（参见 /api/agent/run）
+// 能重新连接上它，超过这个时间 e2b 会自行回收。每次有请求用到它时都会重置
+// 这个计时，所以持续来回对话会一直复用同一个沙箱；而没人再回来的会话就
+// 会自然过期。
 const SANDBOX_IDLE_TTL_MS = 10 * 60 * 1000
 
-// `uploads/<owner>/<uuid>/<filename>` — owner-scoped so one login can't
-// complete/abort/append parts to another's in-flight upload (checked by
-// ownsUploadKey below). ownerId is undefined when auth is off (local dev,
-// same "no owner" convention as sessions/artifacts), which collapses every
-// upload into the shared 'anon' namespace — fine since there's no isolation
-// to enforce in that mode anyway.
+// `uploads/<owner>/<uuid>/<filename>` —— 按 owner 划分命名空间，
+// 这样一个登录用户就无法对另一个用户尚未完成的上传任务执行
+// complete/abort/append parts（下面的 ownsUploadKey 会做校验）。
+// 当鉴权关闭时（本地开发场景）ownerId 会是 undefined，这与
+// sessions/artifacts 里“无 owner”的约定一致，此时所有上传都会
+// 归并到共享的 'anon' 命名空间下——这没关系，因为这种模式下本来
+// 也不需要隔离。
 function buildUploadKey(ownerId: string | undefined, filename: string): string {
   const safeName = filename.split(/[/\\]/).pop()?.trim() || 'file'
   return `uploads/${ownerId ?? 'anon'}/${crypto.randomUUID()}/${safeName}`
@@ -64,23 +66,33 @@ function ownsUploadKey(key: string, ownerId: string | undefined): boolean {
   return key.startsWith(`uploads/${ownerId ?? 'anon'}/`)
 }
 
-// Pulls each attachment out of R2 and into the sandbox (streamed, never
-// buffered whole in this process — see storage.ts's getObjectStream) before
-// the agent loop starts, then returns a short natural-language note to
-// append to the user's message so the model knows the files are there and
-// the fact survives into persisted history. Re-checks ownsUploadKey here
-// too — a client could otherwise hand back any R2 key, not just one from its
-// own upload namespace, since the client is the one asserting `key` at send
-// time (the /api/uploads* routes only enforce ownership at mint time).
+// 在 agent 循环开始之前，把每个附件从 R2 拉取并写入沙箱（是流式处理，
+// 不会在本进程里整体缓冲——参见 storage.ts 的 getObjectStream），
+// 然后返回一段简短的自然语言说明，附加到用户消息里，让模型知道
+// 这些文件已经存在，并且这个事实会随对话历史一起持久化下来。
+// 这里会再次校验 ownsUploadKey——否则客户端本可以随意传回任意
+// R2 key，而不局限于自己上传命名空间下的 key，因为发送消息时
+// `key` 是由客户端自行声明的（/api/uploads* 系列路由只在签发
+// URL 时校验归属权）。
+//
+// 图片类附件多一步处理：写入沙箱后立刻再读回来（用的是和
+// view_image 相同的 `files.read(..., {format: 'bytes'})` 调用），
+// 这样这一轮的 runAgentLoop 调用就能立即把图片展示给视觉模型看，
+// 不需要模型再额外调用一次工具才能看到刚上传的内容。体积过大的
+// 图片会跳过自动预览（但仍然会写入沙箱——如果之后特意要求查看，
+// view_image 仍可以明确地报错并说明原因，而不是让这个函数在这里
+// 悄悄地尝试并以不同的方式出错）。
 async function attachFilesToSandbox(
   sandbox: Sandbox,
   attachments: UploadedAttachment[],
   ownerId: string | undefined,
-): Promise<string> {
-  if (attachments.length === 0) return ''
+): Promise<{ note: string; visionImages: PendingVisionImage[] }> {
+  if (attachments.length === 0) return { note: '', visionImages: [] }
 
   const ok: string[] = []
   const failed: string[] = []
+  const tooLargeToPreview: string[] = []
+  const visionImages: PendingVisionImage[] = []
   for (const attachment of attachments) {
     const safeName = attachment.filename.split(/[/\\]/).pop()?.trim() || 'file'
     if (!ownsUploadKey(attachment.key, ownerId)) {
@@ -94,13 +106,31 @@ async function attachFilesToSandbox(
     } catch (err) {
       console.error('failed to pull attachment into sandbox:', err)
       failed.push(safeName)
+      continue
+    }
+
+    if (attachment.mimeType.startsWith('image/')) {
+      try {
+        const bytes = await sandbox.files.read(safeName, { format: 'bytes', requestTimeoutMs: 60_000 })
+        if (bytes.byteLength <= MAX_VISION_IMAGE_BYTES) {
+          visionImages.push({ mimeType: attachment.mimeType, base64: Buffer.from(bytes).toString('base64'), label: safeName })
+        } else {
+          tooLargeToPreview.push(safeName)
+        }
+      } catch (err) {
+        console.error('failed to read image attachment back for vision preview:', err)
+      }
     }
   }
 
   const parts: string[] = []
   if (ok.length > 0) parts.push(`用户上传了以下文件，已放在沙箱当前目录：${ok.join('、')}`)
   if (failed.length > 0) parts.push(`以下文件读取失败，无法使用：${failed.join('、')}`)
-  return parts.length > 0 ? `\n\n（${parts.join('；')}）` : ''
+  if (tooLargeToPreview.length > 0) {
+    parts.push(`以下图片体积较大，未自动展示，如需查看请先在沙箱内压缩后用 view_image 查看：${tooLargeToPreview.join('、')}`)
+  }
+  const note = parts.length > 0 ? `\n\n（${parts.join('；')}）` : ''
+  return { note, visionImages }
 }
 
 const app = new Hono()
@@ -171,22 +201,22 @@ app.get('/api/artifacts/:id', requireAuth, async (c) => {
     disposition,
   })
 
-  // ?raw=1 hands back the presigned R2 URL itself instead of redirecting —
-  // needed by anything that reads the file's bytes with its own HTTP client
-  // rather than following a browser navigation (react-pdf/pdf.js, papaparse,
-  // and the Microsoft Office viewer's server-side fetch). None of those
-  // carry our session cookie, so they can't hit this authenticated route
-  // directly; they need the raw, already-authorized URL up front. Plain
-  // <img>/<video>/<a href> usage keeps working unchanged via the redirect.
+  // ?raw=1 会直接返回预签名的 R2 URL 本身，而不是做重定向——
+  // 这是给那些用自己的 HTTP 客户端读取文件字节、而不是走浏览器
+  // 导航的场景准备的（比如 react-pdf/pdf.js、papaparse，以及
+  // Microsoft Office 在线预览的服务端 fetch）。这些调用方都不会
+  // 带上我们的会话 cookie，所以没法直接访问这个需要鉴权的路由；
+  // 它们需要提前拿到这个已经授权好的原始 URL。普通的
+  // <img>/<video>/<a href> 用法则不受影响，仍然走重定向。
   if (c.req.query('raw') === '1') {
     return c.json({ url, name: artifact.name, mimeType: artifact.mimeType })
   }
   return c.redirect(url, 302)
 })
 
-// Single-shot direct-to-R2 upload — pairs with @autonoma/upload's
-// createR2UploadAdapter. Mints a presigned PUT URL; the file bytes never
-// touch this server.
+// 单次直传 R2 的上传方式——与 @autonoma/upload 的
+// createR2UploadAdapter 配套使用。这里只签发一个预签名的 PUT URL，
+// 文件字节本身不会经过这台服务器。
 app.post('/api/uploads', requireAuth, async (c) => {
   const body = await c.req.json<Partial<PresignedUploadRequest>>().catch(() => ({}) as Partial<PresignedUploadRequest>)
   const { filename, mimeType, size } = body
@@ -204,10 +234,10 @@ app.post('/api/uploads', requireAuth, async (c) => {
   return c.json(response)
 })
 
-// Multipart direct-to-R2 upload (large files) — pairs with
-// @autonoma/upload's createR2MultipartUploadAdapter. Four calls bracket the
-// browser's direct-to-R2 part PUTs: create, part-url (once per part),
-// complete, and abort (cancel/failure cleanup).
+// 分片直传 R2 的上传方式（用于大文件）——与 @autonoma/upload 的
+// createR2MultipartUploadAdapter 配套使用。四个接口环绕着浏览器
+// 对各分片的直传 PUT 请求：create（创建）、part-url（每个分片
+// 调用一次）、complete（完成）、以及 abort（取消/失败时的清理）。
 app.post('/api/uploads/multipart/create', requireAuth, async (c) => {
   const body = await c.req.json<Partial<MultipartCreateRequest>>().catch(() => ({}) as Partial<MultipartCreateRequest>)
   const { filename, mimeType, size } = body
@@ -278,9 +308,9 @@ app.post('/api/agent/run', requireAuth, async (c) => {
   const requestedSessionId = typeof body.sessionId === 'string' && body.sessionId ? body.sessionId : undefined
   const ownerId = await getOwnerId(c)
 
-  // A client-supplied sessionId is only ever a lookup key into a session the
-  // server already issued — never adopted as-is. If it doesn't resolve to
-  // one this login owns, mint a fresh one instead of trusting the client's ID.
+  // 客户端传上来的 sessionId 永远只是用来查找服务器此前已签发的会话
+  // 的一个键，绝不会被直接采信当作真实会话使用。如果它对应不到当前
+  // 登录用户拥有的会话，就重新生成一个，而不是信任客户端给的 ID。
   let accessibleSessionId = requestedSessionId
   if (accessibleSessionId) {
     const access = await resolveSessionAccess(accessibleSessionId, ownerId)
@@ -303,11 +333,11 @@ app.post('/api/agent/run', requireAuth, async (c) => {
       await stream.writeSSE({ event: 'session', data: JSON.stringify(event) })
     }
 
-    // Reuse this session's sandbox if it's still alive (see setSandboxId
-    // below) instead of always paying for a cold Sandbox.create() — also
-    // what lets a file generated in an earlier turn still be there for a
-    // later export_artifact call. Falls back to a fresh sandbox whenever
-    // reconnect fails for any reason (expired, reaped, never existed).
+    // 如果该会话的沙箱还存活就复用它（参见下面的 setSandboxId），
+    // 而不是每次都付出冷启动 Sandbox.create() 的代价——这也是为什么
+    // 前面某一轮生成的文件到了后面调用 export_artifact 时依然存在的
+    // 原因。只要重连因为任何原因失败（过期、被回收、或从未存在过），
+    // 就回退到创建一个全新的沙箱。
     let sandbox: Sandbox | undefined
     const existingSandboxId = await getSandboxId(sessionId).catch(() => null)
     if (existingSandboxId) {
@@ -319,8 +349,8 @@ app.post('/api/agent/run', requireAuth, async (c) => {
     }
     if (!sandbox) {
       try {
-        // e2b creation occasionally blips on a transient network error — worth
-        // a couple of retries before giving up and telling the user.
+        // e2b 创建偶尔会因为瞬时网络错误而失败——值得先重试几次，
+        // 再放弃并告知用户。
         sandbox = await withRetry(() => Sandbox.create({ timeoutMs: SANDBOX_IDLE_TTL_MS }), 3, 500)
       } catch (err) {
         console.error('Sandbox.create failed:', err)
@@ -331,24 +361,24 @@ app.post('/api/agent/run', requireAuth, async (c) => {
 
     try {
       const messages = await loadSessionMessagesForAgent(sessionId, ownerId)
-      // Row is guaranteed to exist now (loadSessionMessagesForAgent just
-      // touched it) — safe to persist which sandbox this session owns, so
-      // the next message in this conversation can reconnect to it too.
+      // 此时这一行记录必然已经存在（loadSessionMessagesForAgent 刚刚
+      // 访问过它）——可以放心持久化保存这个会话归属的沙箱，这样这个
+      // 对话里的下一条消息也能重新连接上它。
       await setSandboxId(sessionId, sandbox.sandboxId).catch((err) =>
         console.error('failed to persist sandboxId:', err),
       )
       const turnStart = messages.length
-      const attachmentNote = await attachFilesToSandbox(sandbox, attachments, ownerId)
+      const { note: attachmentNote, visionImages } = await attachFilesToSandbox(sandbox, attachments, ownerId)
       messages.push({ role: 'user', content: task + attachmentNote })
 
       try {
-        for await (const event of runAgentLoop(messages, sandbox, sessionId)) {
+        for await (const event of runAgentLoop(messages, sandbox, sessionId, visionImages)) {
           await stream.writeSSE({ event: event.type, data: JSON.stringify(event) })
         }
       } finally {
-        // Persist whatever this turn produced even on error — runAgentLoop
-        // mutates `messages` in place, so a partial turn still has useful
-        // history in it.
+        // 即使出错也要把这一轮产生的内容持久化下来——runAgentLoop
+        // 会就地修改 `messages`，所以就算这一轮没跑完，里面也已经有
+        // 有价值的历史记录了。
         await appendMessages(sessionId, messages.slice(turnStart)).catch((err) =>
           console.error('failed to persist conversation turn:', err),
         )
@@ -357,10 +387,9 @@ app.post('/api/agent/run', requireAuth, async (c) => {
       console.error(err)
       await sendError(err instanceof Error ? err.message : String(err))
     } finally {
-      // Not killed — extend its lease instead, so the next message in this
-      // session (within the window) can reconnect to the same sandbox. A
-      // sandbox nobody comes back to just expires on its own via e2b's
-      // timeout; nothing here needs to explicitly clean it up.
+      // 并不是把它杀掉——而是延长它的存活时间，这样这个会话在时间窗口
+      // 内的下一条消息还能重新连接上同一个沙箱。没人再回来用的沙箱会
+      // 通过 e2b 自身的超时机制自然过期；这里不需要做任何显式清理。
       await sandbox.setTimeout(SANDBOX_IDLE_TTL_MS).catch((err) => console.error('sandbox.setTimeout failed:', err))
     }
   })

@@ -1,6 +1,6 @@
-// ahooks has no query-string-backed state hook, so the URL half of session
-// persistence (unlike the localStorage half, via useLocalStorageState in
-// useConsoleSession) stays hand-rolled here.
+// ahooks 没有基于 query string 的状态 hook，所以会话持久化中 URL 那一半
+// （不同于 localStorage 那一半，后者在 useConsoleSession 中通过
+// useLocalStorageState 实现）在这里仍然是手写的。
 export function readSessionIdFromUrl(): string | undefined {
   return new URLSearchParams(window.location.search).get('session') ?? undefined
 }

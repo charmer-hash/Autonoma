@@ -12,20 +12,18 @@ export function useConsoleSession() {
   const [task, setTask] = useState('')
   const [blocks, setBlocks] = useState<Block[]>([])
   const [running, setRunning] = useState(false)
-  // sessionId is issued by the server, never picked by the client (see
-  // apps/server/src/index.ts). Kept in both the URL's ?session= param (so a
-  // conversation can be bookmarked/shared and reopened directly) and
-  // localStorage — via ahooks' useLocalStorageState — (so a plain reload
-  // without that param still continues the last conversation). The URL wins
-  // when both are present.
+  // sessionId 由服务端签发，客户端从不自行选取（见
+  // apps/server/src/index.ts）。同时保存在 URL 的 ?session= 参数中（这样
+  // 一段对话可以被收藏/分享后直接重新打开）以及
+  // localStorage 中——通过 ahooks 的 useLocalStorageState——（这样即使
+  // 没有该参数的普通刷新也能继续上一次的对话）。两者都存在时以 URL 为准。
   const [storedSessionId, setStoredSessionId] = useLocalStorageState<string | undefined>('sessionId')
   const initialSessionId = readSessionIdFromUrl() ?? storedSessionId
   const [sessionId, setSessionId] = useState<string | undefined>(initialSessionId)
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [sessionsLoading, setSessionsLoading] = useState(true)
-  // Starts true whenever there's a sessionId to restore, so the console
-  // shows a loading state instead of briefly flashing the "no messages yet"
-  // empty state for a session that actually has history.
+  // 只要存在待恢复的 sessionId，初始值就为 true，这样控制台会显示加载状态，
+  // 而不是对一个实际上有历史记录的会话短暂闪现"暂无消息"的空状态。
   const [messagesLoading, setMessagesLoading] = useState(Boolean(initialSessionId))
 
   function setActiveSessionId(id: string | undefined) {
@@ -44,13 +42,13 @@ export function useConsoleSession() {
     }
   }
 
-  // Restores the conversation on page refresh — sessionId survives in
-  // localStorage/URL but `blocks` doesn't, so without this a reload shows an
-  // empty console even though the server still has the history.
+  // 在页面刷新时恢复对话——sessionId 保存在 localStorage/URL 中得以留存，
+  // 但 `blocks` 不会保留，所以如果没有这段逻辑，刷新会显示空的控制台，
+  // 尽管服务端仍保留着历史记录。
   useEffect(() => {
     refreshSessions()
-    // If sessionId only came from the localStorage fallback (no ?session= in
-    // the URL yet), reflect it in the URL too so it's immediately shareable.
+    // 如果 sessionId 只是来自 localStorage 兜底（URL 中还没有 ?session=），
+    // 也把它同步到 URL 中，使其能立即被分享。
     if (sessionId && readSessionIdFromUrl() !== sessionId) {
       syncSessionIdToUrl(sessionId)
     }
@@ -77,9 +75,9 @@ export function useConsoleSession() {
     setBlocks((prev) => [...prev, { kind: 'tool', id, name, args, status: 'running' }])
   }
 
-  // Matched by id, not "the last block" — the SSE tool_call/tool_result
-  // events carry the same id as the underlying tool_call, so this stays
-  // correct even if that assumption about ordering ever changes.
+  // 按 id 匹配，而不是"最后一个 block"——SSE 的 tool_call/tool_result
+  // 事件携带着与对应 tool_call 相同的 id，所以即使关于顺序的假设以后
+  // 发生变化，这里依然是正确的。
   function finishTool(id: string, result: string) {
     setBlocks((prev) => {
       const idx = prev.findIndex((b) => b.kind === 'tool' && b.id === id)
@@ -96,8 +94,8 @@ export function useConsoleSession() {
     setBlocks((prev) => [...prev, { kind: 'document', name, content }])
   }
 
-  // export_artifact always emits a running tool card first (see loop.ts), so
-  // this swaps that card for the artifact card instead of appending both.
+  // export_artifact 总是先发出一个运行中的工具卡片（见 loop.ts），所以
+  // 这里是把那个卡片替换成 artifact 卡片，而不是两个都追加进去。
   function appendArtifact(id: string, name: string, mimeType: string, size: number) {
     setBlocks((prev) => {
       const last = lastOf(prev)

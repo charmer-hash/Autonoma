@@ -16,9 +16,9 @@ export function DocumentPreviewDialog({
   const [render, setRender] = useState(open)
   const backdropRef = useRef<HTMLDivElement>(null)
   const cardRef = useRef<HTMLDivElement>(null)
-  // Keeps rendering the last non-null doc while the close animation plays —
-  // `doc` itself goes null immediately on close, but the exit timeline
-  // needs a moment before unmounting.
+  // 在关闭动画播放期间持续渲染最后一个非空的 doc——
+  // `doc` 本身在关闭时会立刻变为 null，但退场时间线
+  // 需要一点时间才会真正卸载。
   const lastDoc = useRef(doc)
   if (doc) lastDoc.current = doc
 

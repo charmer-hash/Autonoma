@@ -4,9 +4,8 @@ import { withRetry } from '../lib/retry.js'
 import { db } from './client.js'
 import { users } from './schema.js'
 
-// Burned on a lookup miss so "unknown username" and "wrong password" take
-// the same amount of time — otherwise the response latency itself leaks
-// which usernames exist.
+// 在查找未命中时也会消耗这个哈希，使得"用户名不存在"和"密码错误"
+// 耗时相同 —— 否则响应耗时本身就会泄露哪些用户名是存在的。
 const dummyHash = hashPassword('dummy-password-for-timing')
 
 export async function findUserIdByCredentials(

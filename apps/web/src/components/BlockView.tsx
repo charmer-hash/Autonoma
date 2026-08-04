@@ -22,13 +22,13 @@ export function BlockView({
 
   if (block.kind === 'text') {
     if (live) {
-      // Plain text while streaming so the cursor can sit inline at the end —
-      // once the turn finishes this block re-renders through Markdown instead.
+      // 流式输出时使用纯文本，这样光标能内联显示在末尾——
+      // 一旦本轮结束，这个 block 会改用 Markdown 重新渲染。
       return (
         <p className="text-sm leading-relaxed whitespace-pre-wrap">
           {block.text}
-          {/* A real glyph, not a sized box — it inherits the text's own baseline
-              and line-height, so it lines up regardless of font/zoom. */}
+          {/* 使用真实字形而非固定尺寸的方块——它会继承文本自身的基线
+              和行高，因此无论字体或缩放比例如何都能对齐。 */}
           <span className="animate-pulse text-primary">▍</span>
         </p>
       )

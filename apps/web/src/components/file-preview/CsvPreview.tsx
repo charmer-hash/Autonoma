@@ -3,9 +3,8 @@ import Papa from 'papaparse'
 import { PreviewLoading } from './PreviewLoading'
 import { UnsupportedPreview } from './UnsupportedPreview'
 
-// Matches keyu-monorepo's preview cap: large CSVs would otherwise choke the
-// browser rendering a giant <table>. Users needing the full data should
-// download it rather than scroll a preview.
+// 与 keyu-monorepo 的预览行数上限保持一致：否则大体积 CSV 渲染成巨大的
+// <table> 会卡住浏览器。需要完整数据的用户应该下载文件，而不是在预览里滚动查看。
 const PREVIEW_ROW_LIMIT = 100
 
 type State =

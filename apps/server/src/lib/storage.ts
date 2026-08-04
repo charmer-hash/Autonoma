@@ -10,9 +10,9 @@ import {
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import type { MultipartPart } from '@autonoma/shared'
 
-// Cloudflare R2 is S3-compatible — same SDK, just a different endpoint/region.
-// Client is created lazily (not at module load) so a missing R2 env var only
-// breaks the artifact feature, not the whole server's startup.
+// Cloudflare R2 兼容 S3 —— 用的是同一套 SDK，只是 endpoint/region 不同。
+// 客户端是惰性创建的（而不是在模块加载时创建），这样即使 R2 相关环境变量
+// 缺失，也只会导致 artifact 功能不可用，不会影响整个服务器的启动。
 let client: S3Client | undefined
 
 function getClient(): S3Client {
@@ -43,19 +43,19 @@ export async function uploadArtifact(key: string, bytes: Uint8Array, mimeType: s
   )
 }
 
-// Streams an uploaded file straight from R2 into the sandbox's filesystem
-// (sandbox.files.write accepts a ReadableStream) without buffering the whole
-// object in the server's memory first — matters once a user attaches
-// something sizeable via the multipart path.
+// 把一个已上传的文件直接从 R2 流式传输进沙箱文件系统
+// （sandbox.files.write 接受 ReadableStream），不需要先把整个对象
+// 缓冲进服务器内存 —— 一旦用户通过分片上传路径附加了较大的文件，
+// 这一点就很重要。
 export async function getObjectStream(key: string): Promise<ReadableStream<Uint8Array>> {
   const res = await getClient().send(new GetObjectCommand({ Bucket: getBucket(), Key: key }))
   if (!res.Body) throw new Error('R2 对象为空或不存在。')
   return res.Body.transformToWebStream()
 }
 
-// Short-lived (5 min — just long enough for the browser to follow the
-// redirect and fetch the object) signed GET URL. `disposition` controls
-// whether the browser renders it in place (images) or downloads it.
+// 短时效（5 分钟 —— 刚好够浏览器跟随重定向并抓取该对象）的
+// 签名 GET URL。`disposition` 控制浏览器是原地渲染
+// （比如图片）还是直接下载。
 export async function getPresignedDownloadUrl(
   key: string,
   opts: { filename: string; mimeType: string; disposition: 'inline' | 'attachment' },
@@ -69,20 +69,20 @@ export async function getPresignedDownloadUrl(
   return getSignedUrl(getClient(), command, { expiresIn: 300 })
 }
 
-// Short-lived (5 min — just long enough for the browser to start the PUT
-// before the URL expires; the PUT itself isn't cut off mid-flight once
-// started) signed PUT URL for a direct-from-browser single-shot upload —
-// pairs with @autonoma/upload's createR2UploadAdapter.
+// 短时效（5 分钟 —— 刚好够浏览器在 URL 过期前发起 PUT 请求；
+// 一旦 PUT 已经开始，其本身不会被中途截断）的签名 PUT URL，
+// 用于从浏览器直接发起的一次性上传 ——
+// 与 @autonoma/upload 的 createR2UploadAdapter 配套使用。
 export async function getPresignedUploadUrl(key: string, mimeType: string): Promise<string> {
   const command = new PutObjectCommand({ Bucket: getBucket(), Key: key, ContentType: mimeType })
   return getSignedUrl(getClient(), command, { expiresIn: 300 })
 }
 
-// --- Multipart upload (large files, direct-from-browser) ---
-// Pairs with @autonoma/upload's createR2MultipartUploadAdapter: create once,
-// getPresignedPartUploadUrl per part, then complete (or abort on
-// cancel/failure). Mirrors S3's own multipart API — R2 implements the same
-// three calls.
+// --- 分片上传（大文件，从浏览器直接发起）---
+// 与 @autonoma/upload 的 createR2MultipartUploadAdapter 配套使用：
+// 先 create 一次，每个分片调用一次 getPresignedPartUploadUrl，
+// 然后 complete（或在取消/失败时 abort）。这镜像了 S3 自身的
+// 分片上传 API —— R2 实现了同样的三个调用。
 
 export async function createMultipartUpload(key: string, mimeType: string): Promise<string> {
   const res = await getClient().send(
@@ -92,9 +92,9 @@ export async function createMultipartUpload(key: string, mimeType: string): Prom
   return res.UploadId
 }
 
-// Each part gets its own short-lived URL (not one shared URL) since a large
-// file's parts can be uploaded well apart in time — one 5-minute window for
-// the whole file would expire before slower parts finish.
+// 每个分片都有各自独立的短时效 URL（而不是共用一个 URL），
+// 因为一个大文件的各个分片可能在时间上相隔很远才上传 ——
+// 给整个文件用一个 5 分钟的窗口，会在较慢的分片完成之前就过期。
 export async function getPresignedPartUploadUrl(key: string, uploadId: string, partNumber: number): Promise<string> {
   const command = new UploadPartCommand({ Bucket: getBucket(), Key: key, UploadId: uploadId, PartNumber: partNumber })
   return getSignedUrl(getClient(), command, { expiresIn: 300 })
@@ -111,9 +111,9 @@ export async function completeMultipartUpload(key: string, uploadId: string, par
   )
 }
 
-// Best-effort cleanup for a cancelled/failed multipart upload — without
-// this, R2 keeps billing the already-uploaded parts of an object that will
-// never be completed until a lifecycle rule (if any) sweeps it.
+// 对已取消/失败的分片上传进行尽力而为的清理 —— 如果不这样做，
+// R2 会一直为那些永远不会完成的对象已上传的分片计费，
+// 直到某条生命周期规则（如果配置了的话）将其清除为止。
 export async function abortMultipartUpload(key: string, uploadId: string): Promise<void> {
   await getClient().send(new AbortMultipartUploadCommand({ Bucket: getBucket(), Key: key, UploadId: uploadId }))
 }

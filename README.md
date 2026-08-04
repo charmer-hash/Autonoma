@@ -1,111 +1,119 @@
 # Autonoma
 
-Self-executing agent. Static frontend + long-running agent server.
+自执行 Agent。静态前端 + 常驻运行的 Agent 服务端。
 
-## Structure
+## 项目结构
 
 ```
 apps/
-  web/       React + Vite + TypeScript + Tailwind v4 + shadcn/ui (static, deploys to Cloudflare Pages)
-  server/    Hono on Node (@hono/node-server), long-running service (deploys to Railway)
+  web/       React + Vite + TypeScript + Tailwind v4 + shadcn/ui（静态站点，部署到 Cloudflare Pages）
+  server/    基于 Node 的 Hono（@hono/node-server），常驻服务（部署到 Railway）
 packages/
-  shared/    @autonoma/shared — types shared between web and server (e.g. AgentEvent).
-             Type-only, no build step; import type erases it at compile time.
-  ui/        @autonoma/ui — shared shadcn/ui components (Button, Textarea, theme CSS),
-             for reuse if more apps get added to this monorepo later. Follows shadcn's
-             official monorepo pattern: components live here, apps import via
-             "@autonoma/ui/components/*"; `pnpm dlx shadcn@latest add <x>` from an app
-             writes new components into this package (see apps/web/components.json).
+  shared/    @autonoma/shared —— web 与 server 之间共享的类型（例如 AgentEvent）。
+             只有类型定义，没有构建步骤；`import type` 会在编译期被完全擦除。
+  ui/        @autonoma/ui —— 共享的 shadcn/ui 组件（Button、Textarea、主题 CSS），
+             供以后这个 monorepo 里新增其他应用时复用。遵循 shadcn 官方的 monorepo
+             模式：组件放在这里，各应用通过 "@autonoma/ui/components/*" 导入；在某个
+             应用里执行 `pnpm dlx shadcn@latest add <x>` 会把新组件写进这个包
+             （见 apps/web/components.json）。
 ```
 
-Managed as a pnpm workspace + Turborepo.
+以 pnpm workspace + Turborepo 的方式管理。
 
-## Local development
+## 本地开发
 
 ```bash
 pnpm install
 cp apps/web/.env.example apps/web/.env
 cp apps/server/.env.example apps/server/.env
-# fill in DATABASE_URL in apps/server/.env — the server won't start without it
-pnpm dev   # runs both apps/web (5173) and apps/server (8787) via turbo
+# 在 apps/server/.env 里填好 DATABASE_URL —— 没有它服务端起不来
+pnpm dev   # 通过 turbo 同时跑 apps/web（5173）和 apps/server（8787）
 ```
 
-## Deployment
+## 部署
 
-### Frontend — Cloudflare Pages
+### 前端 —— Cloudflare Pages
 
-1. Connect this repo in the Cloudflare dashboard.
-2. Build settings:
-   - Root directory: `apps/web`
-   - Build command: `pnpm install --frozen-lockfile && pnpm build`
-   - Output directory: `dist`
-3. Set env var `VITE_API_URL` to the deployed server URL.
+1. 在 Cloudflare 控制台里接入这个仓库。
+2. 构建配置：
+   - 根目录：`apps/web`
+   - 构建命令：`pnpm install --frozen-lockfile && pnpm build`
+   - 输出目录：`dist`
+3. 设置环境变量 `VITE_API_URL` 为已部署的服务端地址。
 
-Manual/CLI alternative: `cd apps/web && pnpm build && npx wrangler pages deploy`.
+也可以手动/用 CLI 部署：`cd apps/web && pnpm build && npx wrangler pages deploy`。
 
-### Backend — Railway
+### 后端 —— Railway
 
-1. Create a new Railway service from this repo.
-2. Railway picks up `railway.json` at the repo root, which builds
-   `apps/server/Dockerfile` (a multi-stage build using `turbo prune` so
-   only the server's dependencies are installed).
-3. Set env vars: `DATABASE_URL`, `OPENROUTER_API_KEY`, `E2B_API_KEY`,
-   `TAVILY_API_KEY`, `CORS_ORIGIN` (the deployed frontend origin),
-   `AUTH_SESSION_SECRET`, `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`,
-   `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`. Railway sets `PORT` automatically.
+1. 从这个仓库创建一个新的 Railway 服务。
+2. Railway 会读取仓库根目录的 `railway.json`，用它来构建
+   `apps/server/Dockerfile`（一个多阶段构建，用 `turbo prune` 只安装
+   服务端需要的依赖）。
+3. 设置环境变量：`DATABASE_URL`、`OPENROUTER_API_KEY`、`E2B_API_KEY`、
+   `TAVILY_API_KEY`、`CORS_ORIGIN`（已部署前端的域名）、
+   `AUTH_SESSION_SECRET`、`R2_ACCOUNT_ID`、`R2_ACCESS_KEY_ID`、
+   `R2_SECRET_ACCESS_KEY`、`R2_BUCKET`。`PORT` 由 Railway 自动设置。
 
-### Database — Neon
+### 数据库 —— Neon
 
-Create a Postgres project at Neon, copy the connection string into
-`DATABASE_URL` for the server.
+在 Neon 创建一个 Postgres 项目，把连接串复制到服务端的
+`DATABASE_URL` 里。
 
-### Sandbox — e2b
+### 沙箱 —— e2b
 
-Create an e2b API key, set it as `E2B_API_KEY` on the server.
+创建一个 e2b API key，设置为服务端的 `E2B_API_KEY`。
 
-### LLM — OpenRouter
+### 大模型 —— OpenRouter
 
-The agent loop calls the LLM through [OpenRouter](https://openrouter.ai) (the
-`openai` SDK pointed at OpenRouter's base URL), not the Anthropic API
-directly. Set `OPENROUTER_API_KEY`. The model is `OPENROUTER_MODEL`
-(default `deepseek/deepseek-v4-pro` — see `apps/server/src/agent/loop.ts`);
-if a model gets rate-limited or restricted on your OpenRouter account, swap
-it via the env var without touching code.
+Agent 循环是通过 [OpenRouter](https://openrouter.ai) 来调用大模型的
+（用 `openai` SDK，把 base URL 指向 OpenRouter），而不是直接调用
+Anthropic API。设置 `OPENROUTER_API_KEY`。模型由 `OPENROUTER_MODEL`
+指定（默认 `deepseek/deepseek-v4-pro`，见 `apps/server/src/agent/client.ts`）；
+如果某个模型在你的 OpenRouter 账号上被限流或限制了，改这个环境变量
+就能换模型，不用改代码。
 
-### Artifact export — Cloudflare R2
+`OPENROUTER_MODEL` 的默认模型只支持文本 —— DeepSeek 在 OpenRouter 上
+不支持图片输入。每当某一轮需要给 Agent 看图片时（刚上传的照片，或者
+`view_image` 工具调用重新从沙箱里读取一张图片 —— 见下文），那一次
+大模型调用会改走 `OPENROUTER_VISION_MODEL`（默认 `x-ai/grok-4.5`）；
+其他轮次仍然用更便宜的纯文本模型。默认用 grok 而不是 Claude/GPT/Gemini
+系列模型，是因为那些厂商在 OpenRouter 上需要额外的账号验证 ——
+在完成验证之前，即便只是纯文本请求，调用它们也会报 403 的
+"provider Terms Of Service" 错误。如果你的 OpenRouter 账号已经通过了
+其中某家的验证，也可以把 `OPENROUTER_VISION_MODEL` 改指向那个模型。
 
-The agent's `export_artifact` tool uploads files it generates in its sandbox
-(charts, PDFs, Excel, CSVs, etc.) to an R2 bucket, since the sandbox itself
-is destroyed at the end of each request. Create an R2 bucket and an API
-token (S3-compatible credentials) in the Cloudflare dashboard, then set
-`R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`.
-Files are served back to the user via a short-lived presigned URL
-(`GET /api/artifacts/:id`), never proxied through the server.
+### 产物导出 —— Cloudflare R2
 
-### Web search — Tavily
+Agent 的 `export_artifact` 工具会把它在沙箱里生成的文件（图表、PDF、
+Excel、CSV 等）上传到 R2 桶，因为沙箱本身在每次请求结束后就会被销毁。
+在 Cloudflare 控制台创建一个 R2 桶和一个 API token（S3 兼容凭证），
+然后设置 `R2_ACCOUNT_ID`、`R2_ACCESS_KEY_ID`、`R2_SECRET_ACCESS_KEY`、
+`R2_BUCKET`。文件是通过一个短时效的预签名 URL
+（`GET /api/artifacts/:id`）返回给用户的，从不经过服务端代理转发。
 
-The agent's `web_search` tool calls [Tavily](https://tavily.com) (free tier
-available) so it can ground plans/recommendations in real facts instead of
-inventing them. Set `TAVILY_API_KEY`; without it the tool returns a clear
-"not configured" error instead of failing silently.
+### 联网搜索 —— Tavily
 
-### Login — real accounts, no self-serve signup
+Agent 的 `web_search` 工具会调用 [Tavily](https://tavily.com)（有免费额度）
+来给计划/建议提供真实依据，而不是凭空编造。设置 `TAVILY_API_KEY`；
+不设置的话，这个工具会明确返回"未配置"的错误，而不是悄悄失败。
 
-The web console sits behind a login (username + password + a signed
-`httpOnly` session cookie). Accounts live in the `users` table (password
-hashed with `scrypt`, never stored in plaintext or in env vars) — there's no
-registration page or password reset, so create accounts manually:
+### 登录 —— 真实账号，不支持自助注册
+
+网页控制台需要登录才能访问（用户名 + 密码 + 一个签名过的 `httpOnly`
+会话 cookie）。账号存在 `users` 表里（密码用 `scrypt` 哈希，从不明文
+存储，也不放在环境变量里）—— 没有注册页面也没有找回密码，所以账号需要
+手动创建：
 
 ```bash
 cd apps/server && pnpm create-user <username> <password>
 ```
 
-Set `AUTH_SESSION_SECRET` on the server to require login; if it's unset, the
-console (and `/api/agent/run`) runs open, which is only meant for local dev.
-`AUTH_SESSION_SECRET` should be a long random string — it signs the session
-cookie.
+在服务端设置 `AUTH_SESSION_SECRET` 即可强制要求登录；如果不设置，控制台
+（以及 `/api/agent/run`）会以开放模式运行，这只适合本地开发用。
+`AUTH_SESSION_SECRET` 应该是一个足够长的随机字符串 —— 它用来给会话
+cookie 签名。
 
-## Notes
+## 说明
 
-- Even with login, cap agent runs before sharing the link with others — it burns LLM tokens per session, not per login.
-- Turborepo caches builds per-package: touching only `apps/web` skips rebuilding `apps/server`, and vice versa.
+- 即便加了登录，把链接分享给别人之前也要给 Agent 运行设个上限 —— 它消耗的是每个会话的 LLM token，不是按登录账号算的。
+- Turborepo 按包做构建缓存：只改 `apps/web` 不会触发 `apps/server` 重新构建，反之亦然。

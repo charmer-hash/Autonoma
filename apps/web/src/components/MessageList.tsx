@@ -10,9 +10,9 @@ import { formatBytes } from '@/lib/format'
 import { BlockView } from './BlockView'
 import { BrandMark } from './BrandMark'
 
-// Shapes loosely mimic a real exchange (assistant reply, short user reply,
-// longer assistant reply) so the placeholder reads as "a conversation is
-// about to appear" rather than a generic grid of bars.
+// 形状大致模拟真实的对话（assistant 回复、简短的 user 回复、
+// 较长的 assistant 回复），让占位内容看起来像“对话即将出现”，
+// 而不是一堆通用的横条网格。
 const SKELETON_ROWS: { align: 'start' | 'end'; widths: string[] }[] = [
   { align: 'start', widths: ['65%', '40%'] },
   { align: 'end', widths: ['42%'] },
@@ -37,19 +37,17 @@ export function MessageList({
   const groups = useMemo(() => groupBlocks(blocks), [blocks])
 
   useEffect(() => {
-    // Smooth while a turn is actively streaming (nice to watch the reply
-    // grow into view); an instant jump when a session is first opened or
-    // switched — nobody wants to watch a scroll through someone's whole
-    // history just to land at the bottom.
+    // 一轮对话正在流式输出时使用平滑滚动（可以看着回复逐渐展开，效果不错）；
+    // 而首次打开或切换会话时则直接瞬间跳转到底部——没有人想看着
+    // 页面滚过整个历史记录，就为了最终落到底部。
     bottomRef.current?.scrollIntoView({ block: 'end', behavior: running ? 'smooth' : 'instant' })
   }, [blocks, running])
 
-  // Pop in a group only when it's the single new one appended live — a turn
-  // actually producing new output. When several groups appear in the same
-  // update (opening a session loads its whole history at once), that's old
-  // content, not something new happening — animating it in reads as motion
-  // for no reason, so it should just be there, like a chat app landing on
-  // an existing thread.
+  // 仅当新增的是实时追加的单个 group 时才播放弹入动画——即真的有
+  // 一轮对话在产生新输出。如果同一次更新里出现了多个 group（比如打开
+  // 会话时一次性加载了全部历史记录），那些是旧内容，并非新发生的事情——
+  // 给它们加动画只会是无意义的晃动，所以这种情况下应该直接静态展示，
+  // 就像聊天应用打开一个已有的会话一样。
   useLayoutEffect(() => {
     const grown = groups.length - prevGroupCount.current
     const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -148,14 +146,12 @@ export function MessageList({
                         panel={panel}
                       />
                     ))}
-                    {/* A tool call finishing (status -> 'done') is a silent jump —
-                        no more sweep animation, no next block yet either. Without
-                        this, the page shows nothing happening in between, even
-                        though the agent is still working (deciding the next step,
-                        or about to stream its reply). Reuses the same breathing
-                        dot as the pre-first-block indicator below, minus the
-                        avatar — this one continues the existing group instead of
-                        starting a new row. */}
+                    {/* 工具调用完成（status -> 'done'）是一次无声的跳变——
+                        没有了扫光动画，下一个 block 也还没出现。如果不加这个，
+                        页面在这期间会显得毫无动静，尽管 agent 其实仍在工作
+                        （思考下一步，或者即将开始流式输出回复）。这里复用了
+                        下方“首个 block 出现前”指示器同款的呼吸点动画，只是
+                        去掉了头像——因为它是延续已有的 group，而不是新开一行。 */}
                     {running &&
                       i === groups.length - 1 &&
                       lastOf(group.blocks)?.kind === 'tool' &&

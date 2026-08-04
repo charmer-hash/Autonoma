@@ -7,16 +7,14 @@ import { UnsupportedPreview } from './UnsupportedPreview'
 import 'react-pdf/dist/Page/AnnotationLayer.css'
 import 'react-pdf/dist/Page/TextLayer.css'
 
-// Vite-friendly worker setup — points at the exact worker build shipped by
-// the pdfjs-dist version react-pdf depends on, bundled by Vite rather than
-// fetched from a third party's CDN (no external runtime dependency, no
-// version-skew risk between worker and main thread).
+// 对 Vite 友好的 worker 配置——精确指向 react-pdf 所依赖的 pdfjs-dist 版本
+// 自带的 worker 构建产物，由 Vite 打包，而不是从第三方 CDN 获取（没有外部
+// 运行时依赖，也不存在 worker 与主线程之间版本不一致的风险）。
 pdfjs.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString()
 
-// Renders every page up front (no virtual scrolling) — simplest option, and
-// fine for the artifact sizes this app deals with (agent-exported files
-// capped at 20MB). Revisit with @tanstack/react-virtual if very-long PDFs
-// become common.
+// 一次性把所有页面都渲染出来（没有做虚拟滚动）——这是最简单的方案，对于本应用
+// 处理的产物文件大小（agent 导出的文件上限为 20MB）来说也够用。如果超长 PDF
+// 变得常见，可以考虑改用 @tanstack/react-virtual。
 export function PdfPreview({ url }: { url: string }) {
   const [numPages, setNumPages] = useState(0)
   const [scale, setScale] = useState(1.1)

@@ -7,9 +7,9 @@ import { RunCommandResult } from '@/components/tool-results/RunCommandResult'
 import { WebSearchResult } from '@/components/tool-results/WebSearchResult'
 import { WriteFileResult } from '@/components/tool-results/WriteFileResult'
 
-// Shared between ToolCard (inline, compact) and PreviewPanel (right-side,
-// full) — one place decides "which icon/label/result-renderer for this tool
-// name" so the two surfaces can't silently drift apart.
+// 在 ToolCard（内联、紧凑）和 PreviewPanel（右侧、完整）之间共享——
+// 由一个地方统一决定"这个工具名对应哪个图标/标签/结果渲染组件"，
+// 这样两处展示就不会悄悄地产生分歧。
 export const TOOL_META: Record<string, { icon: typeof Terminal; label: string }> = {
   run_command: { icon: Terminal, label: '命令' },
   write_file: { icon: FileCode, label: '文件' },

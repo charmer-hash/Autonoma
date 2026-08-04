@@ -10,20 +10,17 @@ import { getToolResultComponent, TOOL_META, toolSummary } from '@/lib/tool-meta'
 export function ToolCard({ block, panel }: { block: Extract<Block, { kind: 'tool' }>; panel: PreviewPanelController }) {
   const meta = TOOL_META[block.name]
   const Icon = meta?.icon ?? Terminal
-  // Open by default only for a call that's actively running when it first
-  // mounts — i.e. one happening live, right now, that the user is watching.
-  // A call that's already 'done' at mount (loaded from history, or an
-  // earlier turn in the same session) starts collapsed — otherwise opening
-  // an old session with a dozen tool calls dumps every command's full
-  // output at once. Deliberately only read at mount: once a running call
-  // finishes, it stays open rather than snapping shut on the user.
+  // 只有在挂载时正处于运行中的调用才默认展开——也就是用户正在实时观看的那种。
+  // 挂载时已经是 'done' 状态的调用（从历史记录加载，或者同一会话里更早的
+  // 一轮对话）默认收起——否则打开一个有十几个工具调用的旧会话时，会把每个
+  // 命令的完整输出一次性全部展示出来。这里刻意只在挂载时读取一次：一个正在
+  // 运行的调用完成后会保持展开，而不会突然在用户面前收起。
   const [open, setOpen] = useState(() => block.status === 'running')
   const bodyRef = useRef<HTMLDivElement>(null)
   const mounted = useRef(false)
 
-  // Animate height on toggle, but not on first mount — whatever a card's
-  // initial open/collapsed state is, it should render at its natural
-  // height immediately, not animate in from zero.
+  // 切换时对高度做动画，但首次挂载时不做——无论卡片初始是展开还是收起状态，
+  // 都应该立即以其自然高度渲染出来，而不是从零开始做进场动画。
   useLayoutEffect(() => {
     const el = bodyRef.current
     if (!el) return
@@ -63,11 +60,10 @@ export function ToolCard({ block, panel }: { block: Extract<Block, { kind: 'tool
             <CheckCircle2 className="animate-in zoom-in-50 size-3.5 shrink-0 text-primary duration-300" />
           )}
         </button>
-        {/* Independent of the inline expand/collapse above — opens the same
-            result in the right-side panel (full-height, uncapped) instead of
-            the compact inline body below. Kept as a sibling button, not
-            nested inside the toggle button above, since nested <button>s
-            are invalid HTML and would double-fire on click. */}
+        {/* 与上方的行内展开/收起相互独立——在右侧面板（全高、无高度限制）中
+            打开同一份结果，而不是下方那种紧凑的行内展示。这里作为兄弟按钮
+            存在，而不是嵌套在上面的切换按钮内部，因为嵌套的 <button> 是无效的
+            HTML，点击时会触发两次。 */}
         <Button
           variant="ghost"
           size="icon-sm"
@@ -95,11 +91,10 @@ export function ToolCard({ block, panel }: { block: Extract<Block, { kind: 'tool
   )
 }
 
-// A soft diagonal light sweeps across the header while a tool call is
-// in-flight — pure CSS (see the `tool-sweep` keyframe in index.css), no
-// animation-library timeline needed for a simple infinite loop. Sits above
-// the header's text (no z-index — content is explicitly `relative z-10`)
-// so it visibly passes over the icon/label, not just behind them.
+// 工具调用进行中时，头部会有一道柔和的斜向光带扫过——纯 CSS 实现（参见
+// index.css 中的 `tool-sweep` 关键帧），像这种简单的无限循环动画不需要动画库
+// 的 timeline。它叠在头部文字之上（没有额外设置 z-index——内容本身显式设置了
+// `relative z-10`），这样光带才会明显地从图标/标签上方掠过，而不只是从背后经过。
 function RunningSweep() {
   return (
     <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
