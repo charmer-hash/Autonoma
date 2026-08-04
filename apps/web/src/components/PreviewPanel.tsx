@@ -2,10 +2,11 @@ import { useMemo } from 'react'
 import { CheckCircle2, File as FileIcon, Loader2, Terminal, X } from 'lucide-react'
 import { Button } from '@autonoma/ui/components/button'
 import { cn } from '@autonoma/ui/lib/utils'
-import type { PreviewPanelController } from '@/hooks/usePreviewPanel'
 import type { Block } from '@/types/blocks'
 import { getArtifactRawUrl } from '@/lib/artifacts-api'
 import { getToolResultComponent, TOOL_META, toolSummary } from '@/lib/tool-meta'
+import { useConsoleStore } from '@/store/consoleStore'
+import { usePanelStore } from '@/store/panelStore'
 import { FilePreview } from './file-preview/FilePreview'
 
 // 几乎完全镜像了 Sidebar.tsx 的双模式 CSS，只是镜像到了右侧：
@@ -15,12 +16,17 @@ import { FilePreview } from './file-preview/FilePreview'
 const EASE = 'ease-[cubic-bezier(0.16,1,0.3,1)]'
 const PANEL_WIDTH = 'md:w-[440px]'
 
-export function PreviewPanel({ panel, blocks }: { panel: PreviewPanelController; blocks: Block[] }) {
-  const { target, collapsed, close } = panel
+// blocks/target/collapsed 都直接从各自的 store 订阅——不再需要
+// Console.tsx 转发 props。
+export function PreviewPanel() {
+  const blocks = useConsoleStore((s) => s.blocks)
+  const target = usePanelStore((s) => s.target)
+  const collapsed = usePanelStore((s) => s.collapsed)
+  const close = usePanelStore((s) => s.close)
 
   // 每次渲染都实时查找——绝不是保存的快照。运行中工具的 block 会随着
-  // 输出到达而原地变化（见 useConsoleSession 的 finishTool）；如果这里
-  // 保存的是面板打开那一刻的副本，用户看到的就会是一份冻结的快照，
+  // 输出到达而原地变化（见 store/consoleStore.ts 的 finishTool）；如果
+  // 这里保存的是面板打开那一刻的副本，用户看到的就会是一份冻结的快照，
   // 而不是实时结果。
   const toolBlock =
     target?.kind === 'tool' ? (blocks.find((b) => b.kind === 'tool' && b.id === target.id) as

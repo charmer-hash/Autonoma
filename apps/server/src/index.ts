@@ -4,20 +4,37 @@ import { cors } from 'hono/cors'
 import { logger } from 'hono/logger'
 import { streamSSE } from 'hono/streaming'
 import { Sandbox } from 'e2b'
-import type {
-  AgentEvent,
-  MultipartCompleteRequest,
-  MultipartCreateRequest,
-  MultipartCreateResponse,
-  MultipartPart,
-  MultipartPartUrlRequest,
-  PresignedUpload,
-  PresignedUploadRequest,
-  UploadedAttachment,
+import {
+  DEFAULT_AGENT_SETTINGS,
+  MAX_CUSTOM_INSTRUCTIONS_LENGTH,
+  MAX_MAX_TURNS,
+  MAX_SANDBOX_IDLE_MINUTES,
+  MIN_MAX_TURNS,
+  MIN_SANDBOX_IDLE_MINUTES,
+  type AgentEvent,
+  type AgentSettings,
+  type AgentSettingsResponse,
+  type AuthMeResponse,
+  type LoginRequest,
+  type MultipartCompleteRequest,
+  type MultipartCreateRequest,
+  type MultipartCreateResponse,
+  type MultipartPart,
+  type MultipartPartUrlRequest,
+  type PresignedUpload,
+  type PresignedUploadRequest,
+  type PublicKeyResponse,
+  type UpdateAgentSettingsRequest,
+  type UpdateAgentSettingsResponse,
+  type UploadedAttachment,
 } from '@autonoma/shared'
+import { resolveApproval } from './agent/approvals.js'
 import { runAgentLoop } from './agent/loop.js'
 import { MAX_VISION_IMAGE_BYTES, type PendingVisionImage } from './agent/tools/vision.js'
 import { authenticate, clearSession, createSession, getOwnerId, isAuthenticated, requireAuth } from './auth.js'
+import { decryptPassword, getPublicKeyBase64 } from './lib/login-crypto.js'
+import { getLatestAttachmentByFilename, insertAttachment } from './db/attachments.js'
+import { getDailyCostUsd } from './db/usage.js'
 import { getArtifactById } from './db/artifacts.js'
 import { runMigrations } from './db/migrate.js'
 import {
@@ -29,6 +46,7 @@ import {
   resolveSessionAccess,
   setSandboxId,
 } from './db/sessions.js'
+import { getAgentSettings, getUsernameById, updateAgentSettings } from './db/users.js'
 import {
   abortMultipartUpload,
   completeMultipartUpload,
@@ -44,11 +62,10 @@ import { withRetry } from './lib/retry.js'
 // 这只是一个防滥用的宽松上限，并不是针对具体功能的真实限制。
 const MAX_UPLOAD_BYTES = 500 * 1024 * 1024
 
-// 一个空闲沙箱会被保留多久，以便该会话的下一条消息（参见 /api/agent/run）
-// 能重新连接上它，超过这个时间 e2b 会自行回收。每次有请求用到它时都会重置
-// 这个计时，所以持续来回对话会一直复用同一个沙箱；而没人再回来的会话就
-// 会自然过期。
-const SANDBOX_IDLE_TTL_MS = 10 * 60 * 1000
+// 每个用户每天（滚动 24 小时）最多花费多少美元——基于 OpenRouter 返回的
+// 真实 cost，见 agent/loop.ts 里 insertUsageEvent 的调用。
+const DAILY_COST_LIMIT_USD = Number(process.env.DAILY_COST_LIMIT_USD ?? 5)
+
 
 // `uploads/<owner>/<uuid>/<filename>` —— 按 owner 划分命名空间，
 // 这样一个登录用户就无法对另一个用户尚未完成的上传任务执行
@@ -82,8 +99,15 @@ function ownsUploadKey(key: string, ownerId: string | undefined): boolean {
 // 图片会跳过自动预览（但仍然会写入沙箱——如果之后特意要求查看，
 // view_image 仍可以明确地报错并说明原因，而不是让这个函数在这里
 // 悄悄地尝试并以不同的方式出错）。
+//
+// 每个附件在校验通过 ownsUploadKey 之后，会立刻把 R2 key 落库
+// （db/attachments.ts）——放在尝试写入沙箱之前，是因为浏览器此时已经
+// 把文件直传到 R2 了，跟接下来这一步沙箱写入是否成功无关；这样哪怕
+// 沙箱写入网络抖动失败，数据库里依然留着可以恢复的记录。这条记录也是
+// view_image 在沙箱过期、文件已经找不到时的 R2 回退依据。
 async function attachFilesToSandbox(
   sandbox: Sandbox,
+  sessionId: string,
   attachments: UploadedAttachment[],
   ownerId: string | undefined,
 ): Promise<{ note: string; visionImages: PendingVisionImage[] }> {
@@ -99,6 +123,16 @@ async function attachFilesToSandbox(
       failed.push(safeName)
       continue
     }
+
+    await insertAttachment({
+      id: crypto.randomUUID(),
+      sessionId,
+      filename: safeName,
+      mimeType: attachment.mimeType,
+      size: attachment.size,
+      r2Key: attachment.key,
+    }).catch((err) => console.error('failed to persist attachment record:', err))
+
     try {
       const stream = await getObjectStream(attachment.key)
       await sandbox.files.write(safeName, stream)
@@ -111,11 +145,16 @@ async function attachFilesToSandbox(
 
     if (attachment.mimeType.startsWith('image/')) {
       try {
-        const bytes = await sandbox.files.read(safeName, { format: 'bytes', requestTimeoutMs: 60_000 })
-        if (bytes.byteLength <= MAX_VISION_IMAGE_BYTES) {
-          visionImages.push({ mimeType: attachment.mimeType, base64: Buffer.from(bytes).toString('base64'), label: safeName })
-        } else {
+        // 先问沙箱里这份文件实际写入了多大——不能信 attachment.size，
+        // 那是上传时客户端自己声明的，从未被服务端验证过（预签名 PUT
+        // 的字节直接从浏览器发往 R2，不经过这台服务器）。用真实大小
+        // 判断要不要读进内存，而不是先整个读完再检查。
+        const info = await sandbox.files.getInfo(safeName, { requestTimeoutMs: 60_000 })
+        if (info.size > MAX_VISION_IMAGE_BYTES) {
           tooLargeToPreview.push(safeName)
+        } else {
+          const bytes = await sandbox.files.read(safeName, { format: 'bytes', requestTimeoutMs: 60_000 })
+          visionImages.push({ mimeType: attachment.mimeType, base64: Buffer.from(bytes).toString('base64'), label: safeName })
         }
       } catch (err) {
         console.error('failed to read image attachment back for vision preview:', err)
@@ -147,11 +186,26 @@ app.use(
 
 app.get('/health', (c) => c.json({ ok: true }))
 
+// 前端登录前先拿这把公钥来加密密码——不缓存在别处，每次登录都现拿，
+// 这样服务端重启导致密钥轮换时，下一次登录自然会用到新公钥，不需要
+// 额外的失效/刷新机制。
+app.get('/api/auth/public-key', (c) => {
+  return c.json({ publicKey: getPublicKeyBase64() } satisfies PublicKeyResponse)
+})
+
 app.post('/api/auth/login', async (c) => {
   const body = await c.req
-    .json<{ username?: string; password?: string }>()
-    .catch(() => ({}) as { username?: string; password?: string })
-  const ownerId = await authenticate(body.username, body.password)
+    .json<Partial<LoginRequest>>()
+    .catch(() => ({}) as Partial<LoginRequest>)
+
+  let password: string
+  try {
+    password = decryptPassword(body.encryptedPassword)
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : '登录请求格式不正确。' }, 400)
+  }
+
+  const ownerId = await authenticate(body.username, password)
   if (!ownerId) {
     return c.json({ error: '用户名或密码错误' }, 401)
   }
@@ -164,7 +218,69 @@ app.post('/api/auth/logout', (c) => {
   return c.json({ ok: true })
 })
 
-app.get('/api/auth/me', async (c) => c.json({ authenticated: await isAuthenticated(c) }))
+app.get('/api/auth/me', async (c) => {
+  const authenticated = await isAuthenticated(c)
+  if (!authenticated) return c.json({ authenticated } satisfies AuthMeResponse)
+  const ownerId = await getOwnerId(c)
+  const username = ownerId ? await getUsernameById(ownerId) : undefined
+  return c.json({ authenticated, username } satisfies AuthMeResponse)
+})
+
+app.get('/api/settings', requireAuth, async (c) => {
+  const ownerId = await getOwnerId(c)
+  const settings = ownerId ? await getAgentSettings(ownerId) : DEFAULT_AGENT_SETTINGS
+  return c.json(settings satisfies AgentSettingsResponse)
+})
+
+app.put('/api/settings', requireAuth, async (c) => {
+  const body = await c.req
+    .json<Partial<UpdateAgentSettingsRequest>>()
+    .catch(() => ({}) as Partial<UpdateAgentSettingsRequest>)
+
+  const customInstructions = typeof body.customInstructions === 'string' ? body.customInstructions : ''
+  if (customInstructions.length > MAX_CUSTOM_INSTRUCTIONS_LENGTH) {
+    return c.json({ error: `自定义指令过长，最多 ${MAX_CUSTOM_INSTRUCTIONS_LENGTH} 个字符。` }, 400)
+  }
+  if (body.approvalMode !== 'auto' && body.approvalMode !== 'confirm') {
+    return c.json({ error: '审批模式取值不合法。' }, 400)
+  }
+  const maxTurns = Number(body.maxTurns)
+  if (!Number.isInteger(maxTurns) || maxTurns < MIN_MAX_TURNS || maxTurns > MAX_MAX_TURNS) {
+    return c.json({ error: `单轮最大步数必须在 ${MIN_MAX_TURNS}-${MAX_MAX_TURNS} 之间。` }, 400)
+  }
+  if (body.modelChoice !== 'default' && body.modelChoice !== 'grok') {
+    return c.json({ error: '模型选择取值不合法。' }, 400)
+  }
+  const sandboxIdleMinutes = Number(body.sandboxIdleMinutes)
+  if (
+    !Number.isInteger(sandboxIdleMinutes) ||
+    sandboxIdleMinutes < MIN_SANDBOX_IDLE_MINUTES ||
+    sandboxIdleMinutes > MAX_SANDBOX_IDLE_MINUTES
+  ) {
+    return c.json({ error: `沙箱空闲保留时长必须在 ${MIN_SANDBOX_IDLE_MINUTES}-${MAX_SANDBOX_IDLE_MINUTES} 分钟之间。` }, 400)
+  }
+
+  const settings: AgentSettings = {
+    customInstructions: customInstructions.trim(),
+    approvalMode: body.approvalMode,
+    maxTurns,
+    codeExecEnabled: Boolean(body.codeExecEnabled),
+    webSearchEnabled: Boolean(body.webSearchEnabled),
+    visionEnabled: Boolean(body.visionEnabled),
+    modelChoice: body.modelChoice,
+    conciseReplies: Boolean(body.conciseReplies),
+    sandboxIdleMinutes,
+  }
+
+  const ownerId = await getOwnerId(c)
+  if (!ownerId) {
+    // 鉴权关闭时没有账号可关联——不报错，但也没法持久化，前端会据
+    // persisted: false 提示用户这条设置不会被保存。
+    return c.json({ ok: true, persisted: false } satisfies UpdateAgentSettingsResponse)
+  }
+  await updateAgentSettings(ownerId, settings)
+  return c.json({ ok: true, persisted: true } satisfies UpdateAgentSettingsResponse)
+})
 
 app.get('/api/sessions', requireAuth, async (c) => {
   const ownerId = await getOwnerId(c)
@@ -211,6 +327,34 @@ app.get('/api/artifacts/:id', requireAuth, async (c) => {
   if (c.req.query('raw') === '1') {
     return c.json({ url, name: artifact.name, mimeType: artifact.mimeType })
   }
+  return c.redirect(url, 302)
+})
+
+// 给控制台里展示用户上传图片的缩略图用——跟 GET /api/artifacts/:id
+// 是同一个鉴权 + 预签名重定向模式，区别只是这里按 (sessionId, 文件名)
+// 查，而不是按一个客户端已知的 id 查（前端历史消息里从来就没有过
+// attachment 的 id，只有从持久化的提示文字里解析出来的文件名——见
+// apps/web/src/lib/blocks.ts）。同一文件名在这个 session 里上传过
+// 多次时，取最新的一份。
+app.get('/api/sessions/:sessionId/attachments/:filename', requireAuth, async (c) => {
+  const sessionId = c.req.param('sessionId')
+  const filename = c.req.param('filename')
+  if (!sessionId || !filename) return c.json({ error: 'Missing sessionId / filename.' }, 400)
+
+  const ownerId = await getOwnerId(c)
+  const access = await resolveSessionAccess(sessionId, ownerId)
+  if (access === 'forbidden') return c.json({ error: '无权访问该会话。' }, 403)
+  if (access === 'not_found') return c.json({ error: '会话不存在。' }, 404)
+
+  const record = await getLatestAttachmentByFilename(sessionId, filename)
+  if (!record) return c.json({ error: '文件不存在。' }, 404)
+
+  const disposition = record.mimeType.startsWith('image/') ? 'inline' : 'attachment'
+  const url = await getPresignedDownloadUrl(record.r2Key, {
+    filename: record.filename,
+    mimeType: record.mimeType,
+    disposition,
+  })
   return c.redirect(url, 302)
 })
 
@@ -296,6 +440,28 @@ app.post('/api/uploads/multipart/abort', requireAuth, async (c) => {
   return c.json({ ok: true })
 })
 
+// 审批模式（AgentSettings.approvalMode === 'confirm'）下，run_command/write_file/
+// export_artifact 执行前会先在 SSE 里发出 approval_required 事件并挂起等待——
+// 这个路由就是前端点批准/拒绝按钮时唤醒它的入口，见 agent/approvals.ts。
+app.post('/api/agent/approve', requireAuth, async (c) => {
+  const body = await c.req
+    .json<{ sessionId?: string; toolCallId?: string; approved?: boolean }>()
+    .catch(() => ({}) as { sessionId?: string; toolCallId?: string; approved?: boolean })
+  const { sessionId, toolCallId, approved } = body
+  if (!sessionId || !toolCallId || typeof approved !== 'boolean') {
+    return c.json({ error: '缺少 sessionId / toolCallId / approved。' }, 400)
+  }
+
+  const ownerId = await getOwnerId(c)
+  const access = await resolveSessionAccess(sessionId, ownerId)
+  if (access === 'forbidden') return c.json({ error: '无权访问该会话。' }, 403)
+  if (access === 'not_found') return c.json({ error: '会话不存在。' }, 404)
+
+  const resolved = resolveApproval(`${sessionId}:${toolCallId}`, approved)
+  if (!resolved) return c.json({ error: '该操作已被处理或已超时。' }, 404)
+  return c.json({ ok: true })
+})
+
 app.post('/api/agent/run', requireAuth, async (c) => {
   const body = await c.req
     .json<{ task?: string; sessionId?: string; attachments?: UploadedAttachment[] }>()
@@ -307,6 +473,17 @@ app.post('/api/agent/run', requireAuth, async (c) => {
   const attachments = Array.isArray(body.attachments) ? body.attachments : []
   const requestedSessionId = typeof body.sessionId === 'string' && body.sessionId ? body.sessionId : undefined
   const ownerId = await getOwnerId(c)
+
+  // 每日花费上限（滚动 24 小时窗口，不是自然日）——放在这里、沙箱创建
+  // 之前检查，这样一个已经超额的请求不会还去白白付一次沙箱冷启动的
+  // 成本。鉴权关闭时 ownerId 是 undefined，不做额度控制（本地开发场景，
+  // 跟这个项目里"无 owner = 无隔离"的既有约定一致）。
+  if (ownerId) {
+    const spentToday = await getDailyCostUsd(ownerId).catch(() => 0)
+    if (spentToday >= DAILY_COST_LIMIT_USD) {
+      return c.json({ error: `今日额度已用完（$${DAILY_COST_LIMIT_USD.toFixed(2)}/天），请稍后再试。` }, 429)
+    }
+  }
 
   // 客户端传上来的 sessionId 永远只是用来查找服务器此前已签发的会话
   // 的一个键，绝不会被直接采信当作真实会话使用。如果它对应不到当前
@@ -321,6 +498,16 @@ app.post('/api/agent/run', requireAuth, async (c) => {
   }
   const isNewSession = !accessibleSessionId
   const sessionId: string = accessibleSessionId ?? crypto.randomUUID()
+
+  // 提前一次性加载好，供下面的沙箱创建/超时设置和 runAgentLoop 共用——
+  // 读取失败（数据库瞬时抖动）不应该让整个任务跑不起来，静默回退到默认设置。
+  const settings: AgentSettings = ownerId
+    ? await getAgentSettings(ownerId).catch((err) => {
+        console.error('failed to load agent settings:', err)
+        return DEFAULT_AGENT_SETTINGS
+      })
+    : DEFAULT_AGENT_SETTINGS
+  const sandboxIdleTtlMs = settings.sandboxIdleMinutes * 60_000
 
   return streamSSE(c, async (stream) => {
     async function sendError(message: string) {
@@ -351,7 +538,7 @@ app.post('/api/agent/run', requireAuth, async (c) => {
       try {
         // e2b 创建偶尔会因为瞬时网络错误而失败——值得先重试几次，
         // 再放弃并告知用户。
-        sandbox = await withRetry(() => Sandbox.create({ timeoutMs: SANDBOX_IDLE_TTL_MS }), 3, 500)
+        sandbox = await withRetry(() => Sandbox.create({ timeoutMs: sandboxIdleTtlMs }), 3, 500)
       } catch (err) {
         console.error('Sandbox.create failed:', err)
         await sendError('沙箱环境创建失败，请稍后重试。')
@@ -368,11 +555,11 @@ app.post('/api/agent/run', requireAuth, async (c) => {
         console.error('failed to persist sandboxId:', err),
       )
       const turnStart = messages.length
-      const { note: attachmentNote, visionImages } = await attachFilesToSandbox(sandbox, attachments, ownerId)
+      const { note: attachmentNote, visionImages } = await attachFilesToSandbox(sandbox, sessionId, attachments, ownerId)
       messages.push({ role: 'user', content: task + attachmentNote })
 
       try {
-        for await (const event of runAgentLoop(messages, sandbox, sessionId, visionImages)) {
+        for await (const event of runAgentLoop(messages, sandbox, sessionId, visionImages, settings, ownerId)) {
           await stream.writeSSE({ event: event.type, data: JSON.stringify(event) })
         }
       } finally {
@@ -390,7 +577,7 @@ app.post('/api/agent/run', requireAuth, async (c) => {
       // 并不是把它杀掉——而是延长它的存活时间，这样这个会话在时间窗口
       // 内的下一条消息还能重新连接上同一个沙箱。没人再回来用的沙箱会
       // 通过 e2b 自身的超时机制自然过期；这里不需要做任何显式清理。
-      await sandbox.setTimeout(SANDBOX_IDLE_TTL_MS).catch((err) => console.error('sandbox.setTimeout failed:', err))
+      await sandbox.setTimeout(sandboxIdleTtlMs).catch((err) => console.error('sandbox.setTimeout failed:', err))
     }
   })
 })

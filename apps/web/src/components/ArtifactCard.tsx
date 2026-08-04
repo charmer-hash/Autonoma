@@ -2,20 +2,15 @@ import { useState } from 'react'
 import { Download, File, Maximize2 } from 'lucide-react'
 import { Button } from '@autonoma/ui/components/button'
 import { useIsMobile } from '@/hooks/useIsMobile'
-import type { PreviewPanelController } from '@/hooks/usePreviewPanel'
 import type { Block } from '@/types/blocks'
 import { API_URL } from '@/lib/api-client'
 import { formatBytes } from '@/lib/format'
+import { usePanelStore } from '@/store/panelStore'
 import { pickPreviewKind } from './file-preview/dispatch'
 import { FilePreviewDialog } from './FilePreviewDialog'
 
-export function ArtifactCard({
-  block,
-  panel,
-}: {
-  block: Extract<Block, { kind: 'artifact' }>
-  panel: PreviewPanelController
-}) {
+export function ArtifactCard({ block }: { block: Extract<Block, { kind: 'artifact' }> }) {
+  const openPanel = usePanelStore((s) => s.open)
   const [previewOpen, setPreviewOpen] = useState(false)
   const isMobile = useIsMobile()
   const url = `${API_URL}/api/artifacts/${block.id}`
@@ -26,7 +21,7 @@ export function ArtifactCard({
   // 覆盖层在小屏幕上会显得多余——所以移动端仍使用居中弹窗展示。
   function openPreview() {
     if (isMobile) setPreviewOpen(true)
-    else panel.open({ kind: 'artifact', id: block.id })
+    else openPanel({ kind: 'artifact', id: block.id })
   }
 
   if (block.mimeType.startsWith('image/')) {

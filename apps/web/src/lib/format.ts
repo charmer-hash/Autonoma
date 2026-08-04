@@ -26,6 +26,17 @@ export function parseResult<T>(result: string | undefined): T | null {
   }
 }
 
+const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'])
+
+// 历史消息里的附件只有文件名（没有真正的 mimeType——见
+// apps/web/src/lib/blocks.ts 的 parseAttachmentNote），按后缀猜一下用不
+// 用尝试渲染缩略图；猜错了顶多是该显示缩略图的没显示，不会渲染出一个
+// 加载失败的 <img> 图标。
+export function isLikelyImageFilename(filename: string): boolean {
+  const ext = filename.split('.').pop()?.toLowerCase() ?? ''
+  return IMAGE_EXTENSIONS.has(ext)
+}
+
 export function formatBytes(size: number): string {
   if (size < 1024) return `${size} B`
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`

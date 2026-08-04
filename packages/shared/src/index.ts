@@ -5,6 +5,10 @@ export type AgentEvent =
   | { type: 'text_delta'; delta: string }
   | { type: 'tool_call'; id: string; name: string; args: unknown }
   | { type: 'tool_result'; id: string; name: string; result: string }
+  // 审批模式（AgentSettings.approvalMode === 'confirm'）下，run_command/write_file/
+  // export_artifact 这几个会改动沙箱状态的工具在真正执行前先发出这个事件，等待
+  // 用户在前端点击批准/拒绝（POST /api/agent/approve）——参见 agent/approvals.ts。
+  | { type: 'approval_required'; id: string; name: string; args: unknown }
   | { type: 'document'; name: string; content: string }
   | { type: 'artifact'; id: string; name: string; mimeType: string; size: number }
   | { type: 'error'; message: string }
@@ -52,3 +56,70 @@ export type MultipartAbortRequest = { key: string; uploadId: string }
 // 回传的（而不是从 R2 对象重新解析出来的），因为服务端在真正接触到该
 // 对象之前就需要用到这些信息。
 export type UploadedAttachment = { key: string; filename: string; mimeType: string; size: number }
+
+// GET /api/auth/me 的线上传输结构 —— username 只在已登录且鉴权开启时
+// 才有值（本地免登录模式下 authenticated 恒为 true 但没有具体账号）。
+export type AuthMeResponse = { authenticated: boolean; username?: string }
+
+// GET /api/auth/public-key 的线上传输结构——publicKey 是 RSA 公钥的
+// SPKI/DER 编码，再转成 base64（不是 PEM，前端直接用 Web Crypto 的
+// `importKey('spki', ...)` 消费，不需要额外解析 PEM 头尾）。参见
+// apps/server/src/lib/login-crypto.ts。
+export type PublicKeyResponse = { publicKey: string }
+
+// POST /api/auth/login 的线上传输结构——密码字段永远是用上面这把
+// RSA 公钥加密后的密文（base64），服务端用私钥解密后才会拿去跟数据库里
+// 的 scrypt 哈希比对；请求体里不会出现明文密码。
+export type LoginRequest = { username: string; encryptedPassword: string }
+
+// Agent 设置（GET/PUT /api/settings）的线上传输结构 —— 自定义指令 +
+// 审批模式/最大步数/工具开关/模型选择/回复风格/沙箱空闲时长。
+// MAX_CUSTOM_INSTRUCTIONS_LENGTH 同时被 apps/server 的 API 校验和
+// apps/web 的 Textarea maxLength 使用，跟这段文本会在用户每次对话时
+// 都被拼进发给模型的消息有关 —— 定得太宽会让每轮请求都多带一大截
+// 可有可无的 token。
+export const MAX_CUSTOM_INSTRUCTIONS_LENGTH = 2000
+
+export type ApprovalMode = 'auto' | 'confirm'
+export type ModelChoice = 'default' | 'grok'
+
+export const MIN_MAX_TURNS = 5
+export const MAX_MAX_TURNS = 60
+export const MIN_SANDBOX_IDLE_MINUTES = 5
+export const MAX_SANDBOX_IDLE_MINUTES = 60
+
+// 模型选择只开放这两档 —— 这个 OpenRouter 账号目前只验证过
+// deepseek-v4-pro/grok-4.5/glm-4.6v/qwen3-vl 能正常调用（其余模型可能
+// 直接 403，见 agent/client.ts），开放更多档位风险自担。
+export const MODEL_CHOICES: { value: ModelChoice; label: string; description: string }[] = [
+  { value: 'default', label: '默认', description: '速度快、成本低，适合大多数任务' },
+  { value: 'grok', label: 'Grok 4.5（推理更强）', description: '推理能力更强，速度较慢、成本更高' },
+]
+
+export type AgentSettings = {
+  customInstructions: string
+  approvalMode: ApprovalMode
+  maxTurns: number
+  codeExecEnabled: boolean
+  webSearchEnabled: boolean
+  visionEnabled: boolean
+  modelChoice: ModelChoice
+  conciseReplies: boolean
+  sandboxIdleMinutes: number
+}
+
+export const DEFAULT_AGENT_SETTINGS: AgentSettings = {
+  customInstructions: '',
+  approvalMode: 'auto',
+  maxTurns: 30,
+  codeExecEnabled: true,
+  webSearchEnabled: true,
+  visionEnabled: true,
+  modelChoice: 'default',
+  conciseReplies: false,
+  sandboxIdleMinutes: 10,
+}
+
+export type AgentSettingsResponse = AgentSettings
+export type UpdateAgentSettingsRequest = AgentSettings
+export type UpdateAgentSettingsResponse = { ok: true; persisted: boolean }

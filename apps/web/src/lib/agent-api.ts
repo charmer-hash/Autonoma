@@ -1,6 +1,18 @@
 import type { AgentEvent, UploadedAttachment } from '@autonoma/shared'
 import { apiFetch, readErrorMessage } from './api-client'
 
+// 审批模式下点击工具卡片上的批准/拒绝按钮时调用——唤醒服务端里
+// 挂起等待的 runAgentLoop（见 agent/approvals.ts），同一条 SSE 连接
+// 会在唤醒后继续把后续事件流回来，不需要这个函数的调用方自己处理。
+export async function postApprovalDecision(sessionId: string, toolCallId: string, approved: boolean): Promise<void> {
+  const res = await apiFetch('/api/agent/approve', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId, toolCallId, approved }),
+  })
+  if (!res.ok) throw new Error(await readErrorMessage(res, '提交决定失败，请重试'))
+}
+
 // 浏览器内置的 EventSource 只支持 GET，而 /api/agent/run 是 POST 请求，
 // 所以我们从 fetch 流中手动解析 `data: ...\n\n` 这种 SSE 帧格式。
 export async function* runAgent(

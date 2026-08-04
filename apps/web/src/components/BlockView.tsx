@@ -1,7 +1,6 @@
-import { useState } from 'react'
+import { memo, useState } from 'react'
 import { CircleAlert, Download, FileText, Maximize2 } from 'lucide-react'
 import { Button } from '@autonoma/ui/components/button'
-import type { PreviewPanelController } from '@/hooks/usePreviewPanel'
 import type { Block } from '@/types/blocks'
 import { downloadText } from '@/lib/format'
 import { ArtifactCard } from './ArtifactCard'
@@ -9,14 +8,19 @@ import { DocumentPreviewDialog } from './DocumentPreviewDialog'
 import { Markdown } from './Markdown'
 import { ToolCard } from './ToolCard'
 
-export function BlockView({
+// 一轮流式回复中每个 token delta 都会让 consoleStore 里的 `blocks`
+// 数组产生新引用（见 store/consoleStore.ts 的 appendText），进而让
+// MessageList 重新渲染；但除了正在流式输出的最后一个 block，其余历史
+// block 对象引用本身是不变的（appendText 只替换数组最后一项）。记忆化后，
+// 这些历史 block 就不会跟着每个 delta 一起重新渲染/重新解析 Markdown。
+// panel 不再作为 prop 传入——ToolCard/ArtifactCard 各自直接从
+// panelStore 取用，这里不需要中转。
+export const BlockView = memo(function BlockView({
   block,
   live,
-  panel,
 }: {
   block: Exclude<Block, { kind: 'user' }>
   live?: boolean
-  panel: PreviewPanelController
 }) {
   const [previewOpen, setPreviewOpen] = useState(false)
 
@@ -73,7 +77,7 @@ export function BlockView({
   }
 
   if (block.kind === 'artifact') {
-    return <ArtifactCard block={block} panel={panel} />
+    return <ArtifactCard block={block} />
   }
 
   if (block.kind === 'error') {
@@ -85,5 +89,5 @@ export function BlockView({
     )
   }
 
-  return <ToolCard block={block} panel={panel} />
-}
+  return <ToolCard block={block} />
+})

@@ -3,10 +3,11 @@ import { last as lastOf } from 'lodash-es'
 import { gsap } from 'gsap'
 import { Paperclip, User } from 'lucide-react'
 import { cn } from '@autonoma/ui/lib/utils'
-import type { PreviewPanelController } from '@/hooks/usePreviewPanel'
-import type { Block } from '@/types/blocks'
+import type { Block, MessageAttachment } from '@/types/blocks'
+import { API_URL } from '@/lib/api-client'
 import { groupBlocks } from '@/lib/blocks'
-import { formatBytes } from '@/lib/format'
+import { formatBytes, isLikelyImageFilename } from '@/lib/format'
+import { useConsoleStore } from '@/store/consoleStore'
 import { BlockView } from './BlockView'
 import { BrandMark } from './BrandMark'
 
@@ -19,17 +20,15 @@ const SKELETON_ROWS: { align: 'start' | 'end'; widths: string[] }[] = [
   { align: 'start', widths: ['55%', '38%', '48%'] },
 ]
 
-export function MessageList({
-  blocks,
-  running,
-  loading,
-  panel,
-}: {
-  blocks: Block[]
-  running: boolean
-  loading?: boolean
-  panel: PreviewPanelController
-}) {
+// blocks/running/loading/sessionId 直接从 consoleStore 订阅——这是这棵
+// 组件树里唯一真正需要在每个 SSE token delta 上重渲染的地方；
+// panel 不再作为 prop 转发，BlockView 及其子组件（ToolCard/ArtifactCard）
+// 各自直接从 panelStore 取用。
+export function MessageList() {
+  const blocks = useConsoleStore((s) => s.blocks)
+  const running = useConsoleStore((s) => s.running)
+  const loading = useConsoleStore((s) => s.messagesLoading)
+  const sessionId = useConsoleStore((s) => s.sessionId)
   const bottomRef = useRef<HTMLDivElement>(null)
   const groupRefs = useRef<(HTMLDivElement | null)[]>([])
   const prevGroupCount = useRef(0)
@@ -109,14 +108,7 @@ export function MessageList({
                     {group.attachments && group.attachments.length > 0 && (
                       <div className="flex flex-wrap justify-end gap-1.5">
                         {group.attachments.map((a, i) => (
-                          <div
-                            key={i}
-                            className="flex items-center gap-1.5 rounded-lg border bg-card px-2.5 py-1.5 text-xs"
-                          >
-                            <Paperclip className="size-3.5 shrink-0 text-muted-foreground" />
-                            <span className="max-w-40 truncate font-medium">{a.filename}</span>
-                            <span className="shrink-0 text-muted-foreground">{formatBytes(a.size)}</span>
-                          </div>
+                          <AttachmentChip key={i} attachment={a} sessionId={sessionId} />
                         ))}
                       </div>
                     )}
@@ -143,7 +135,6 @@ export function MessageList({
                         key={'id' in block ? block.id : j}
                         block={block}
                         live={running && i === groups.length - 1 && j === group.blocks.length - 1}
-                        panel={panel}
                       />
                     ))}
                     {/* 工具调用完成（status -> 'done'）是一次无声的跳变——
@@ -177,5 +168,40 @@ export function MessageList({
         )}
       </div>
     </main>
+  )
+}
+
+// 图片缩略图优先用 previewUrl（浏览器本地的 blob: URL，来自刚发送时的
+// File 对象，立刻能显示，不依赖网络也不依赖服务端有没有落库完成）；
+// 没有 previewUrl 但有 sessionId 时（重新加载的历史消息）走 GET
+// /api/sessions/:sessionId/attachments/:filename——跟 ArtifactCard 展示
+// export_artifact 图片是同一套"直接鉴权重定向"模式。都不满足时退回
+// 普通的文件名 chip。
+//
+// 之前踩过的坑：如果直接用网络接口给"刚发送"这条气泡做缩略图，会跟
+// 服务端异步落库的 attachments 记录产生竞态——图片请求可能在记录写入
+// 之前就发出去，服务端返回 404 JSON，Chrome 会把这种"图片请求收到非
+// 图片响应"报成一个让人摸不着头脑的 net::ERR_BLOCKED_BY_ORB，而不是
+// 直接的 404。用本地 previewUrl 完全绕开了这个时序问题。
+function AttachmentChip({ attachment, sessionId }: { attachment: MessageAttachment; sessionId: string | undefined }) {
+  const isImage = attachment.mimeType ? attachment.mimeType.startsWith('image/') : isLikelyImageFilename(attachment.filename)
+  const url =
+    attachment.previewUrl ??
+    (isImage && sessionId ? `${API_URL}/api/sessions/${sessionId}/attachments/${encodeURIComponent(attachment.filename)}` : undefined)
+
+  if (isImage && url) {
+    return (
+      <div className="overflow-hidden rounded-lg border bg-card">
+        <img src={url} alt={attachment.filename} className="h-24 w-24 object-cover" />
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex items-center gap-1.5 rounded-lg border bg-card px-2.5 py-1.5 text-xs">
+      <Paperclip className="size-3.5 shrink-0 text-muted-foreground" />
+      <span className="max-w-40 truncate font-medium">{attachment.filename}</span>
+      {attachment.size !== undefined && <span className="shrink-0 text-muted-foreground">{formatBytes(attachment.size)}</span>}
+    </div>
   )
 }

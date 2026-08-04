@@ -1,12 +1,12 @@
 import { useRef, useState } from 'react'
 import { gsap } from 'gsap'
 import { ArrowUp, CircleAlert, Loader2, Paperclip, X } from 'lucide-react'
-import type { UploadedAttachment } from '@autonoma/shared'
 import { Button } from '@autonoma/ui/components/button'
 import { Textarea } from '@autonoma/ui/components/textarea'
 import { createR2AutoUploadAdapter } from '@autonoma/upload/lib/auto'
 import { UploadValidationError } from '@autonoma/upload/lib/upload'
 import { cn } from '@autonoma/ui/lib/utils'
+import type { SentAttachment } from '@/types/blocks'
 import { formatBytes } from '@/lib/format'
 import {
   abortMultipartUpload,
@@ -15,6 +15,7 @@ import {
   getMultipartPartUrl,
   getUploadUrl,
 } from '@/lib/uploads-api'
+import { useConsoleStore } from '@/store/consoleStore'
 
 // 更大的文件在技术上依然可以上传（分片上传本身没有真正的上限），
 // 但服务端要先把整个文件拉进沙箱 agent 才能使用它——这是产品层面
@@ -44,17 +45,13 @@ type ComposerAttachment = {
   controller: AbortController
 }
 
-export function Composer({
-  task,
-  setTask,
-  running,
-  onSend,
-}: {
-  task: string
-  setTask: (task: string) => void
-  running: boolean
-  onSend: (attachments: UploadedAttachment[]) => void
-}) {
+// task/running/run 直接从 consoleStore 订阅——不再经手 Console 转发的
+// props，Composer 现在只会因为这几个真正相关的切片变化而重渲染。
+export function Composer() {
+  const task = useConsoleStore((s) => s.task)
+  const setTask = useConsoleStore((s) => s.setTask)
+  const running = useConsoleStore((s) => s.running)
+  const run = useConsoleStore((s) => s.run)
   const sendButtonRef = useRef<HTMLButtonElement>(null)
   const cardRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -110,10 +107,18 @@ export function Composer({
     if (sendButtonRef.current) {
       gsap.fromTo(sendButtonRef.current, { scale: 0.82 }, { scale: 1, duration: 0.35, ease: 'back.out(3)' })
     }
-    const ready: UploadedAttachment[] = attachments
+    const ready: SentAttachment[] = attachments
       .filter((a): a is ComposerAttachment & { key: string } => a.status === 'done' && Boolean(a.key))
-      .map((a) => ({ key: a.key, filename: a.file.name, mimeType: a.file.type || 'application/octet-stream', size: a.file.size }))
-    onSend(ready)
+      .map((a) => ({
+        key: a.key,
+        filename: a.file.name,
+        mimeType: a.file.type || 'application/octet-stream',
+        size: a.file.size,
+        // 图片本地立刻可预览，不用等服务端把附件记录落库、也不用等
+        // 网络请求——见 MessageList.tsx 的 AttachmentChip。
+        previewUrl: a.file.type.startsWith('image/') ? URL.createObjectURL(a.file) : undefined,
+      }))
+    run(ready)
     setAttachments([])
   }
 

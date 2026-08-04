@@ -1,7 +1,25 @@
 import { get } from 'lodash-es'
 import type { StoredMessage } from '@autonoma/shared'
-import type { Block, Group } from '@/types/blocks'
+import type { Block, Group, MessageAttachment } from '@/types/blocks'
 import { parseResult } from '@/lib/format'
+
+// 从持久化消息里那段纯文本提示（见 apps/server/src/index.ts 的
+// attachFilesToSandbox）反解析出文件名列表，只认"上传成功"这一段，
+// 失败/体积过大跳过预览的不算——这两种情况本来就没有可展示的内容。
+// 这段文案的措辞是唯一的数据来源、没有结构化字段（id/size/mimeType），
+// 所以只要后端这句提示文字改了措辞，这里就会悄悄失效（历史消息不再
+// 显示附件），不会报错——可以接受，缩略图本身是锦上添花，不是关键功能。
+const ATTACHMENT_NOTE_RE = /用户上传了以下文件，已放在沙箱当前目录：([^；）]+)/
+
+function parseAttachmentNote(content: string): MessageAttachment[] | undefined {
+  const match = content.match(ATTACHMENT_NOTE_RE)
+  if (!match) return undefined
+  const filenames = match[1]
+    .split('、')
+    .map((f) => f.trim())
+    .filter(Boolean)
+  return filenames.length > 0 ? filenames.map((filename) => ({ filename })) : undefined
+}
 
 // 为一个持久化的会话重建 UI blocks——与 apps/server/src/agent/loop.ts:77-115
 // 实时构建同一份历史记录的方式完全一致，所以重新加载的对话
@@ -17,7 +35,7 @@ export function messagesToBlocks(messages: StoredMessage[]): Block[] {
     if (m.role === 'system' || m.role === 'tool') continue
 
     if (m.role === 'user') {
-      blocks.push({ kind: 'user', text: m.content })
+      blocks.push({ kind: 'user', text: m.content, attachments: parseAttachmentNote(m.content) })
       continue
     }
 

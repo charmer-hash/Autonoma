@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "echo \"no lint configured\"",
     "db:generate": "drizzle-kit generate",
-    "create-user": "tsx --env-file=.env scripts/create-user.ts"
+    "create-user": "tsx --env-file=.env scripts/create-user.ts",
+    "configure-r2-lifecycle": "tsx --env-file=.env scripts/configure-r2-lifecycle.ts"
   },
   "dependencies": {
     "@autonoma/shared": "workspace:*",

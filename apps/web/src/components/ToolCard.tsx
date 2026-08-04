@@ -1,23 +1,40 @@
 import { useLayoutEffect, useRef, useState } from 'react'
 import { gsap } from 'gsap'
-import { CheckCircle2, ChevronDown, Loader2, Maximize2, Terminal } from 'lucide-react'
+import { CheckCircle2, ChevronDown, CircleAlert, Loader2, Maximize2, Terminal, X } from 'lucide-react'
 import { Button } from '@autonoma/ui/components/button'
 import { cn } from '@autonoma/ui/lib/utils'
-import type { PreviewPanelController } from '@/hooks/usePreviewPanel'
 import type { Block } from '@/types/blocks'
 import { getToolResultComponent, TOOL_META, toolSummary } from '@/lib/tool-meta'
+import { useConsoleStore } from '@/store/consoleStore'
+import { usePanelStore } from '@/store/panelStore'
 
-export function ToolCard({ block, panel }: { block: Extract<Block, { kind: 'tool' }>; panel: PreviewPanelController }) {
+export function ToolCard({ block }: { block: Extract<Block, { kind: 'tool' }> }) {
+  const openPanel = usePanelStore((s) => s.open)
   const meta = TOOL_META[block.name]
   const Icon = meta?.icon ?? Terminal
-  // 只有在挂载时正处于运行中的调用才默认展开——也就是用户正在实时观看的那种。
-  // 挂载时已经是 'done' 状态的调用（从历史记录加载，或者同一会话里更早的
-  // 一轮对话）默认收起——否则打开一个有十几个工具调用的旧会话时，会把每个
-  // 命令的完整输出一次性全部展示出来。这里刻意只在挂载时读取一次：一个正在
-  // 运行的调用完成后会保持展开，而不会突然在用户面前收起。
-  const [open, setOpen] = useState(() => block.status === 'running')
+  // 只有在挂载时正处于运行中/等待审批的调用才默认展开——也就是用户
+  // 正在实时观看、或者需要马上做决定的那种。挂载时已经是 'done' 状态的
+  // 调用（从历史记录加载，或者同一会话里更早的一轮对话）默认收起——
+  // 否则打开一个有十几个工具调用的旧会话时，会把每个命令的完整输出
+  // 一次性全部展示出来。这里刻意只在挂载时读取一次：一个正在运行的调用
+  // 完成后会保持展开，而不会突然在用户面前收起。
+  const [open, setOpen] = useState(() => block.status === 'running' || block.status === 'awaiting_approval')
   const bodyRef = useRef<HTMLDivElement>(null)
   const mounted = useRef(false)
+  const respondToApproval = useConsoleStore((s) => s.respondToApproval)
+  // 只用来控制批准/拒绝按钮本身的 loading/失败态——决定发出去之后 block
+  // 的状态变化由 SSE 事件驱动（见 store/consoleStore.ts 的 startTool/
+  // finishTool），不需要在这里自己更新 block。
+  const [decision, setDecision] = useState<'idle' | 'submitting' | 'error'>('idle')
+
+  async function handleApproval(approved: boolean) {
+    setDecision('submitting')
+    const ok = await respondToApproval(block.id, approved)
+    if (!ok) setDecision('error')
+    // 成功的话不用手动改回 'idle'——很快会收到 tool_call/tool_result 事件，
+    // block.status 会变成 'running'/'done'，这个组件的审批横幅整体就不再
+    // 渲染了，decision 这个局部 state 也就无所谓了。
+  }
 
   // 切换时对高度做动画，但首次挂载时不做——无论卡片初始是展开还是收起状态，
   // 都应该立即以其自然高度渲染出来，而不是从零开始做进场动画。
@@ -56,6 +73,8 @@ export function ToolCard({ block, panel }: { block: Extract<Block, { kind: 'tool
           <span className="min-w-0 flex-1 truncate font-mono text-xs">{toolSummary(block.name, block.args)}</span>
           {block.status === 'running' ? (
             <Loader2 className="size-3.5 shrink-0 animate-spin text-primary" />
+          ) : block.status === 'awaiting_approval' ? (
+            <CircleAlert className="size-3.5 shrink-0 text-amber-500" />
           ) : (
             <CheckCircle2 className="animate-in zoom-in-50 size-3.5 shrink-0 text-primary duration-300" />
           )}
@@ -67,7 +86,7 @@ export function ToolCard({ block, panel }: { block: Extract<Block, { kind: 'tool
         <Button
           variant="ghost"
           size="icon-sm"
-          onClick={() => panel.open({ kind: 'tool', id: block.id })}
+          onClick={() => openPanel({ kind: 'tool', id: block.id })}
           aria-label="在右侧查看详情"
           className="relative z-10 size-5 shrink-0"
         >
@@ -82,6 +101,37 @@ export function ToolCard({ block, panel }: { block: Extract<Block, { kind: 'tool
           <ChevronDown className={cn('size-3.5 text-muted-foreground transition-transform', open && 'rotate-180')} />
         </button>
       </div>
+      {/* 独立于上面的展开/收起——审批模式下用户必须能一眼看到需要决定，
+          不能让它被折叠隐藏起来。 */}
+      {block.status === 'awaiting_approval' && (
+        <div className="flex flex-wrap items-center gap-2 border-t bg-amber-500/10 px-3 py-2 text-xs">
+          <span className="min-w-0 flex-1 text-amber-700 dark:text-amber-400">
+            该操作会改动沙箱状态，需要你确认后才会执行。
+          </span>
+          {decision === 'error' && <span className="text-destructive">提交失败，请重试</span>}
+          <div className="flex shrink-0 gap-1.5">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={decision === 'submitting'}
+              onClick={() => handleApproval(false)}
+              className="h-7 gap-1 px-2 text-xs"
+            >
+              <X className="size-3" />
+              拒绝
+            </Button>
+            <Button
+              size="sm"
+              disabled={decision === 'submitting'}
+              onClick={() => handleApproval(true)}
+              className="h-7 gap-1 px-2 text-xs"
+            >
+              {decision === 'submitting' ? <Loader2 className="size-3 animate-spin" /> : <CheckCircle2 className="size-3" />}
+              批准
+            </Button>
+          </div>
+        </div>
+      )}
       <div ref={bodyRef} className={cn('overflow-hidden', !open && 'h-0 opacity-0')}>
         <div className="border-t px-3 py-2.5">
           <ToolBody block={block} />

@@ -1,4 +1,4 @@
-import { desc, eq, isNull, sql } from 'drizzle-orm'
+import { and, desc, eq, gt, isNull, sql } from 'drizzle-orm'
 import type OpenAI from 'openai'
 import { createInitialMessages } from '../agent/loop.js'
 import { planFold, summarizeFold, type MessageRow } from '../agent/compaction.js'
@@ -110,19 +110,42 @@ export async function loadSessionMessagesForAgent(
   sessionId: string,
   ownerId: string | undefined,
 ): Promise<OpenAI.Chat.ChatCompletionMessageParam[]> {
-  const rows = await loadMessageRows(sessionId, ownerId)
-  const systemRow = rows[0]
+  // 与 loadMessageRows 不同，这里不读取会话的全部历史行 —— 只读取
+  // 系统消息（result[0]）和折叠点之后的尾部（下面按 cutoff 过滤）。
+  // 已被折叠进 summary 的旧消息本来就不会发给模型，没必要先整段
+  // 读进内存再在 JS 里 filter 掉，尤其是长会话下这部分行可能很多。
+  const [sessionRow, systemRow] = await Promise.all([
+    withRetry(() =>
+      db
+        .select({ summary: sessions.summary, summarizedThroughId: sessions.summarizedThroughId })
+        .from(sessions)
+        .where(eq(sessions.id, sessionId))
+        .limit(1)
+        .then((rows) => rows[0]),
+    ),
+    withRetry(() =>
+      db
+        .select({ id: messages.id, message: messages.message })
+        .from(messages)
+        .where(eq(messages.sessionId, sessionId))
+        .orderBy(messages.id)
+        .limit(1)
+        .then((rows) => rows[0]),
+    ),
+  ])
 
-  const [sessionRow] = await withRetry(() =>
+  // systemRow 为空意味着这是全新会话（还没有任何消息行）——退回到
+  // loadMessageRows 原有的初始化路径，创建 session 行 + 系统消息。
+  const resolvedSystemRow = systemRow ?? (await loadMessageRows(sessionId, ownerId))[0]
+
+  const cutoff = sessionRow?.summarizedThroughId ?? resolvedSystemRow.id
+  let tailRows = await withRetry(() =>
     db
-      .select({ summary: sessions.summary, summarizedThroughId: sessions.summarizedThroughId })
-      .from(sessions)
-      .where(eq(sessions.id, sessionId))
-      .limit(1),
+      .select({ id: messages.id, message: messages.message })
+      .from(messages)
+      .where(and(eq(messages.sessionId, sessionId), gt(messages.id, cutoff)))
+      .orderBy(messages.id),
   )
-
-  const cutoff = sessionRow?.summarizedThroughId ?? systemRow.id
-  let tailRows = rows.filter((r) => r.id > cutoff)
   let summary = sessionRow?.summary ?? null
 
   const plan = planFold(tailRows)
@@ -147,7 +170,7 @@ export async function loadSessionMessagesForAgent(
     }
   }
 
-  const result: OpenAI.Chat.ChatCompletionMessageParam[] = [systemRow.message]
+  const result: OpenAI.Chat.ChatCompletionMessageParam[] = [resolvedSystemRow.message]
   if (summary) {
     result.push({
       role: 'system',

@@ -75,12 +75,14 @@ Anthropic API。设置 `OPENROUTER_API_KEY`。模型由 `OPENROUTER_MODEL`
 `OPENROUTER_MODEL` 的默认模型只支持文本 —— DeepSeek 在 OpenRouter 上
 不支持图片输入。每当某一轮需要给 Agent 看图片时（刚上传的照片，或者
 `view_image` 工具调用重新从沙箱里读取一张图片 —— 见下文），那一次
-大模型调用会改走 `OPENROUTER_VISION_MODEL`（默认 `x-ai/grok-4.5`）；
-其他轮次仍然用更便宜的纯文本模型。默认用 grok 而不是 Claude/GPT/Gemini
-系列模型，是因为那些厂商在 OpenRouter 上需要额外的账号验证 ——
-在完成验证之前，即便只是纯文本请求，调用它们也会报 403 的
-"provider Terms Of Service" 错误。如果你的 OpenRouter 账号已经通过了
-其中某家的验证，也可以把 `OPENROUTER_VISION_MODEL` 改指向那个模型。
+大模型调用会改走 `OPENROUTER_VISION_MODEL`（默认
+`qwen/qwen3-vl-235b-a22b-instruct`）；其他轮次仍然用更便宜的纯文本模型。
+默认没有选 Claude/GPT/Gemini 系列，是因为部分地区的 OpenRouter 账号调用
+这几家的模型（哪怕是纯文本请求）会收到 403 的 "provider Terms Of
+Service" 错误 —— 实测 `x-ai/grok-4.5`、`z-ai/glm-4.6v`、
+`qwen/qwen3-vl-*` 系列不受影响；Qwen3-VL-235B 在同等图片识别效果下价格
+最低。如果你的账号能正常访问 Claude/GPT/Gemini，也可以把
+`OPENROUTER_VISION_MODEL` 改指向那个模型。
 
 ### 产物导出 —— Cloudflare R2
 
@@ -90,6 +92,11 @@ Excel、CSV 等）上传到 R2 桶，因为沙箱本身在每次请求结束后�
 然后设置 `R2_ACCOUNT_ID`、`R2_ACCESS_KEY_ID`、`R2_SECRET_ACCESS_KEY`、
 `R2_BUCKET`。文件是通过一个短时效的预签名 URL
 （`GET /api/artifacts/:id`）返回给用户的，从不经过服务端代理转发。
+
+桶创建好之后，跑一次 `cd apps/server && pnpm configure-r2-lifecycle`，
+给 `uploads/`（用户上传的原始文件）和 `artifacts/`（Agent 产出的文件）
+配上自动过期规则（分别是 30 天和 90 天），避免存储无限增长——这是一次性
+的操作，不需要跟着每次部署重新跑。
 
 ### 联网搜索 —— Tavily
 
@@ -113,7 +120,15 @@ cd apps/server && pnpm create-user <username> <password>
 `AUTH_SESSION_SECRET` 应该是一个足够长的随机字符串 —— 它用来给会话
 cookie 签名。
 
+### 每日花费上限
+
+每个账号每天（滚动 24 小时窗口，不是自然日）最多能花 `DAILY_COST_LIMIT_USD`
+美元（默认 5），按 OpenRouter 每次请求返回的真实花费（`usage.cost`）累计，
+不是估算的 token 数。超过之后，新对话会直接被拒绝（`429`），当前正在跑的
+对话不会被中途打断；额度会随时间自然滚动恢复，不需要手动重置。只在设置了
+`AUTH_SESSION_SECRET`（要求登录）时才生效——本地开发不受影响。
+
 ## 说明
 
-- 即便加了登录，把链接分享给别人之前也要给 Agent 运行设个上限 —— 它消耗的是每个会话的 LLM token，不是按登录账号算的。
+- 每个账号有每日花费上限（见上面"每日花费上限"一节），但仍然是按账号算的——同一个账号的多个会话共享同一份额度，不是按会话单独限制。
 - Turborepo 按包做构建缓存：只改 `apps/web` 不会触发 `apps/server` 重新构建，反之亦然。

@@ -3,6 +3,7 @@ import {
   CompleteMultipartUploadCommand,
   CreateMultipartUploadCommand,
   GetObjectCommand,
+  HeadObjectCommand,
   PutObjectCommand,
   S3Client,
   UploadPartCommand,
@@ -15,7 +16,8 @@ import type { MultipartPart } from '@autonoma/shared'
 // 缺失，也只会导致 artifact 功能不可用，不会影响整个服务器的启动。
 let client: S3Client | undefined
 
-function getClient(): S3Client {
+// 导出给 scripts/configure-r2-lifecycle.ts 复用，避免重复起一个 S3Client。
+export function getClient(): S3Client {
   if (client) return client
   const accountId = process.env.R2_ACCOUNT_ID
   const accessKeyId = process.env.R2_ACCESS_KEY_ID
@@ -31,7 +33,7 @@ function getClient(): S3Client {
   return client
 }
 
-function getBucket(): string {
+export function getBucket(): string {
   const bucket = process.env.R2_BUCKET
   if (!bucket) throw new Error('R2 未配置（缺少 R2_BUCKET）。')
   return bucket
@@ -51,6 +53,26 @@ export async function getObjectStream(key: string): Promise<ReadableStream<Uint8
   const res = await getClient().send(new GetObjectCommand({ Bucket: getBucket(), Key: key }))
   if (!res.Body) throw new Error('R2 对象为空或不存在。')
   return res.Body.transformToWebStream()
+}
+
+// 直接拿完整字节，而不是流——给那些沙箱里根本没有这个文件、
+// 没法走流式写入的场景用（比如 view_image 的 R2 回退：沙箱文件已经
+// 过期，需要把字节直接塞进发给模型的视觉消息里）。调用方必须在这之前
+// 先用 getObjectSize 做过大小校验——上传时客户端声明的 size 从未被
+// 验证过（预签名 PUT 的字节直接从浏览器发往 R2，从不经过这台服务器），
+// 不可信；R2 返回的 ContentLength 才是真实写入的字节数。
+export async function getObjectBytes(key: string): Promise<Uint8Array> {
+  const res = await getClient().send(new GetObjectCommand({ Bucket: getBucket(), Key: key }))
+  if (!res.Body) throw new Error('R2 对象为空或不存在。')
+  return res.Body.transformToByteArray()
+}
+
+// 只问 R2 要对象的真实大小（HEAD 请求，不下载内容）——用于在决定要不要
+// 把整个对象读进内存之前先做体积校验，而不是先读完整个对象再检查。
+export async function getObjectSize(key: string): Promise<number> {
+  const res = await getClient().send(new HeadObjectCommand({ Bucket: getBucket(), Key: key }))
+  if (typeof res.ContentLength !== 'number') throw new Error('R2 未返回对象大小。')
+  return res.ContentLength
 }
 
 // 短时效（5 分钟 —— 刚好够浏览器跟随重定向并抓取该对象）的

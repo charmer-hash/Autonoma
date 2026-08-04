@@ -1,34 +1,41 @@
-import { MessagesSquare, Plus, Settings } from 'lucide-react'
-import type { SessionSummary } from '@autonoma/shared'
+import { MessagesSquare, Plus } from 'lucide-react'
 import { Button } from '@autonoma/ui/components/button'
 import { cn } from '@autonoma/ui/lib/utils'
+import { AccountMenu } from '@/components/AccountMenu'
 import { BrandMark } from '@/components/BrandMark'
 import { formatRelativeTime } from '@/lib/format'
+import { useConsoleStore } from '@/store/consoleStore'
 
 // 使用不同的宽度，让骨架屏看起来像占位文字，
 // 而不是一堆宽度可疑地整齐划一的横条。
 const SKELETON_ROWS = [78, 55, 68, 45]
 
-// 左侧栏：会话列表 + agent 配置。
+// 左侧栏：会话列表 + agent 配置。会话列表/当前状态直接从 consoleStore
+// 订阅——不再经手 Console 转发的 props，所以流式输出期间（blocks 变化）
+// 不会跟着重渲染，只有真正相关的切片（sessions/sessionsLoading/
+// sessionId/running）变化时才会。
 export function Sidebar({
   collapsed,
-  sessions,
-  sessionsLoading,
-  activeSessionId,
-  disabled,
   onNewSession,
   onSelectSession,
   onClose,
+  username,
+  onOpenSettings,
+  onLogoutClick,
 }: {
   collapsed: boolean
-  sessions: SessionSummary[]
-  sessionsLoading: boolean
-  activeSessionId: string | undefined
-  disabled: boolean
   onNewSession: () => void
   onSelectSession: (id: string) => void
   onClose: () => void
+  username: string | undefined
+  onOpenSettings: () => void
+  onLogoutClick: () => void
 }) {
+  const sessions = useConsoleStore((s) => s.sessions)
+  const sessionsLoading = useConsoleStore((s) => s.sessionsLoading)
+  const activeSessionId = useConsoleStore((s) => s.sessionId)
+  const disabled = useConsoleStore((s) => s.running)
+
   // 与下方抽屉/面板过渡动画相同的 “expo out” 曲线，这样背景遮罩的
   // 淡入淡出和侧边栏的滑动能保持同步，而不会出现一方明显滞后于另一方。
   const EASE = 'ease-[cubic-bezier(0.16,1,0.3,1)]'
@@ -132,17 +139,7 @@ export function Sidebar({
           )}
         </div>
 
-        <div className="border-t px-3 py-3">
-          <Button
-            variant="ghost"
-            className="w-full justify-start gap-2 text-sidebar-foreground/70"
-            disabled
-            title="即将上线"
-          >
-            <Settings className="size-4" />
-            Agent 设置
-          </Button>
-        </div>
+        <AccountMenu username={username} onOpenSettings={onOpenSettings} onLogoutClick={onLogoutClick} />
       </aside>
     </>
   )

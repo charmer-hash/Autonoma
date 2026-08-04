@@ -1,24 +1,22 @@
 import { useLayoutEffect, useRef } from 'react'
 import { gsap } from 'gsap'
-import { LogOut, Moon, PanelLeft, Sun } from 'lucide-react'
+import { Moon, PanelLeft, Sun } from 'lucide-react'
 import { Button } from '@autonoma/ui/components/button'
 import { BrandMark } from '@/components/BrandMark'
+import { useConsoleStore } from '@/store/consoleStore'
 
 export function ConsoleHeader({
   sidebarCollapsed,
   onToggleSidebar,
-  running,
   theme,
   onToggleTheme,
-  onLogoutClick,
 }: {
   sidebarCollapsed: boolean
   onToggleSidebar: () => void
-  running: boolean
   theme: 'light' | 'dark'
   onToggleTheme: () => void
-  onLogoutClick: () => void
 }) {
+  const running = useConsoleStore((s) => s.running)
   const themeIconRef = useRef<HTMLSpanElement>(null)
   const mounted = useRef(false)
 
@@ -59,9 +57,6 @@ export function ConsoleHeader({
           <span ref={themeIconRef} className="inline-flex">
             {theme === 'dark' ? <Sun className="size-4" /> : <Moon className="size-4" />}
           </span>
-        </Button>
-        <Button variant="ghost" size="icon-sm" onClick={onLogoutClick} aria-label="退出登录">
-          <LogOut className="size-4" />
         </Button>
       </div>
     </header>

@@ -1,4 +1,5 @@
 import { eq } from 'drizzle-orm'
+import type { AgentSettings } from '@autonoma/shared'
 import { hashPassword, verifyPassword } from '../lib/password.js'
 import { withRetry } from '../lib/retry.js'
 import { db } from './client.js'
@@ -27,4 +28,62 @@ export async function findUserIdByCredentials(
 
   const ok = await verifyPassword(password, rows[0].passwordHash)
   return ok ? rows[0].id : undefined
+}
+
+export async function getUsernameById(id: string): Promise<string | undefined> {
+  const rows = await withRetry(() =>
+    db.select({ username: users.username }).from(users).where(eq(users.id, id)).limit(1),
+  )
+  return rows[0]?.username
+}
+
+export async function getAgentSettings(id: string): Promise<AgentSettings> {
+  const rows = await withRetry(() =>
+    db
+      .select({
+        customInstructions: users.customInstructions,
+        approvalMode: users.approvalMode,
+        maxTurns: users.maxTurns,
+        codeExecEnabled: users.codeExecEnabled,
+        webSearchEnabled: users.webSearchEnabled,
+        visionEnabled: users.visionEnabled,
+        modelChoice: users.modelChoice,
+        conciseReplies: users.conciseReplies,
+        sandboxIdleMinutes: users.sandboxIdleMinutes,
+      })
+      .from(users)
+      .where(eq(users.id, id))
+      .limit(1),
+  )
+  const row = rows[0]
+  return {
+    customInstructions: row?.customInstructions ?? '',
+    approvalMode: row?.approvalMode === 'confirm' ? 'confirm' : 'auto',
+    maxTurns: row?.maxTurns ?? 30,
+    codeExecEnabled: row?.codeExecEnabled ?? true,
+    webSearchEnabled: row?.webSearchEnabled ?? true,
+    visionEnabled: row?.visionEnabled ?? true,
+    modelChoice: row?.modelChoice === 'grok' ? 'grok' : 'default',
+    conciseReplies: row?.conciseReplies ?? false,
+    sandboxIdleMinutes: row?.sandboxIdleMinutes ?? 10,
+  }
+}
+
+export async function updateAgentSettings(id: string, settings: AgentSettings): Promise<void> {
+  await withRetry(() =>
+    db
+      .update(users)
+      .set({
+        customInstructions: settings.customInstructions,
+        approvalMode: settings.approvalMode,
+        maxTurns: settings.maxTurns,
+        codeExecEnabled: settings.codeExecEnabled,
+        webSearchEnabled: settings.webSearchEnabled,
+        visionEnabled: settings.visionEnabled,
+        modelChoice: settings.modelChoice,
+        conciseReplies: settings.conciseReplies,
+        sandboxIdleMinutes: settings.sandboxIdleMinutes,
+      })
+      .where(eq(users.id, id)),
+  )
 }
