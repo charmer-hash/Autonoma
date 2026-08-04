@@ -198,14 +198,16 @@ app.post('/api/auth/login', async (c) => {
     .json<Partial<LoginRequest>>()
     .catch(() => ({}) as Partial<LoginRequest>)
 
-  let password: string
+  // 字段名叫 password，但 body.password 这时候还是 RSA 密文——先解密出
+  // 明文，再送去跟数据库里的 scrypt 哈希比对（authenticate 内部做的事）。
+  let decryptedPassword: string
   try {
-    password = decryptPassword(body.encryptedPassword)
+    decryptedPassword = decryptPassword(body.password)
   } catch (err) {
     return c.json({ error: err instanceof Error ? err.message : '登录请求格式不正确。' }, 400)
   }
 
-  const ownerId = await authenticate(body.username, password)
+  const ownerId = await authenticate(body.username, decryptedPassword)
   if (!ownerId) {
     return c.json({ error: '用户名或密码错误' }, 401)
   }

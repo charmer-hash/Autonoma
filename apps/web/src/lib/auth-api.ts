@@ -24,7 +24,10 @@ export async function login(username: string, password: string): Promise<{ ok: b
   const res = await apiFetch('/api/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, encryptedPassword } satisfies LoginRequest),
+    // 线上字段名叫 password，但值是上面加密出来的密文，不是明文——
+    // 变量名保留 encryptedPassword 是为了让这段代码本身别把这个事实
+    // 弄丢，跟服务端约定的字段名（LoginRequest.password）是两回事。
+    body: JSON.stringify({ username, password: encryptedPassword } satisfies LoginRequest),
   })
   if (res.ok) return { ok: true }
   return { ok: false, error: await readErrorMessage(res, '登录失败，请重试') }

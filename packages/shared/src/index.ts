@@ -67,10 +67,12 @@ export type AuthMeResponse = { authenticated: boolean; username?: string }
 // apps/server/src/lib/login-crypto.ts。
 export type PublicKeyResponse = { publicKey: string }
 
-// POST /api/auth/login 的线上传输结构——密码字段永远是用上面这把
-// RSA 公钥加密后的密文（base64），服务端用私钥解密后才会拿去跟数据库里
-// 的 scrypt 哈希比对；请求体里不会出现明文密码。
-export type LoginRequest = { username: string; encryptedPassword: string }
+// POST /api/auth/login 的线上传输结构——字段名叫 password，但值永远是
+// 用上面这把 RSA 公钥加密后的密文（base64），不是明文密码；服务端收到后
+// 用私钥解密出明文，才会拿去跟数据库里的 scrypt 哈希比对。字段名没有叫
+// encryptedPassword，是因为请求体里能不能看到明文才是实际风险所在，
+// 字段名本身不影响这一点。
+export type LoginRequest = { username: string; password: string }
 
 // Agent 设置（GET/PUT /api/settings）的线上传输结构 —— 自定义指令 +
 // 审批模式/最大步数/工具开关/模型选择/回复风格/沙箱空闲时长。
