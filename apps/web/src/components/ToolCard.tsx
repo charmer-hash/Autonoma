@@ -74,7 +74,7 @@ export function ToolCard({ block }: { block: Extract<Block, { kind: 'tool' }> })
           {block.status === 'running' ? (
             <Loader2 className="size-3.5 shrink-0 animate-spin text-primary" />
           ) : block.status === 'awaiting_approval' ? (
-            <CircleAlert className="size-3.5 shrink-0 text-amber-500" />
+            <CircleAlert className="size-3.5 shrink-0 text-warning" />
           ) : (
             <CheckCircle2 className="animate-in zoom-in-50 size-3.5 shrink-0 text-primary duration-300" />
           )}
@@ -96,18 +96,16 @@ export function ToolCard({ block }: { block: Extract<Block, { kind: 'tool' }> })
           type="button"
           onClick={() => setOpen((v) => !v)}
           aria-label={open ? '收起详情' : '展开详情'}
-          className="relative z-10 shrink-0"
+          className="relative z-10 flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
         >
-          <ChevronDown className={cn('size-3.5 text-muted-foreground transition-transform', open && 'rotate-180')} />
+          <ChevronDown className={cn('size-3.5 transition-transform', open && 'rotate-180')} />
         </button>
       </div>
       {/* 独立于上面的展开/收起——审批模式下用户必须能一眼看到需要决定，
           不能让它被折叠隐藏起来。 */}
       {block.status === 'awaiting_approval' && (
-        <div className="flex flex-wrap items-center gap-2 border-t bg-amber-500/10 px-3 py-2 text-xs">
-          <span className="min-w-0 flex-1 text-amber-700 dark:text-amber-400">
-            该操作会改动沙箱状态，需要你确认后才会执行。
-          </span>
+        <div className="flex flex-wrap items-center gap-2 border-t bg-warning/10 px-3 py-2 text-xs">
+          <span className="min-w-0 flex-1 text-warning">该操作会改动沙箱状态，需要你确认后才会执行。</span>
           {decision === 'error' && <span className="text-destructive">提交失败，请重试</span>}
           <div className="flex shrink-0 gap-1.5">
             <Button

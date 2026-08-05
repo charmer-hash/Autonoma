@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { CheckCircle2, File as FileIcon, Loader2, Terminal, X } from 'lucide-react'
+import { CheckCircle2, File as FileIcon, Inbox, Loader2, Terminal, X } from 'lucide-react'
 import { Button } from '@autonoma/ui/components/button'
 import { cn } from '@autonoma/ui/lib/utils'
 import type { Block } from '@/types/blocks'
@@ -94,9 +94,12 @@ export function PreviewPanel() {
           {toolBlock && <ToolDetail block={toolBlock} />}
           {artifactSource && <FilePreview source={artifactSource} />}
           {!toolBlock && !artifactSource && (
-            <p className="py-16 text-center text-sm text-muted-foreground">
-              内容已不在当前会话中，可能是切换了会话。
-            </p>
+            <div className="flex flex-col items-center gap-3 py-16 text-center">
+              <div className="flex size-10 items-center justify-center rounded-full bg-muted text-muted-foreground">
+                <Inbox className="size-4" />
+              </div>
+              <p className="max-w-[15rem] text-sm text-muted-foreground">内容已不在当前会话中，可能是切换了会话。</p>
+            </div>
           )}
         </div>
       </aside>

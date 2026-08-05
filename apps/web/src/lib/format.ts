@@ -70,6 +70,12 @@ const relativeTimeFormatter = new Intl.RelativeTimeFormat('zh-CN', { numeric: 'a
 
 export function formatRelativeTime(iso: string): string {
   const diffMs = new Date(iso).getTime() - Date.now()
+  // updated_at 理论上总是服务端写入的合法时间戳，但这里被 Sidebar 会话列表
+  // 对每一行都调用一次——一旦真的遇到非法/缺失的值，`diffMs` 会是 NaN，
+  // 后面 Intl.RelativeTimeFormat.format(NaN, ...) 会直接抛 RangeError，
+  // 炸掉整个列表的渲染而不只是这一行。兜底返回空字符串，让这一行退化成
+  // "没有时间说明"而不是让整个侧边栏白屏。
+  if (Number.isNaN(diffMs)) return ''
   const diffMinutes = Math.round(diffMs / 60_000)
   if (Math.abs(diffMinutes) < 60) return relativeTimeFormatter.format(diffMinutes, 'minute')
   const diffHours = Math.round(diffMinutes / 60)

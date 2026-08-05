@@ -27,8 +27,26 @@ export type StoredMessage =
     }
   | { role: 'tool'; tool_call_id: string; content: string }
 
-// GET /api/sessions 返回的单行数据的线上传输结构。
-export type SessionSummary = { id: string; updatedAt: string; preview: string | null }
+// GET /api/sessions 返回的单行数据的线上传输结构——name 是用户手动改过
+// 的标题，null 表示从未重命名过，这种情况下前端落回显示 preview。
+export type SessionSummary = { id: string; updatedAt: string; preview: string | null; name: string | null }
+
+// GET /api/sessions 的完整响应结构——hasMore 表示还有没有下一页
+// （分页参数见 lib/sessions-api.ts），不是靠单独一次 COUNT 查询算出来的，
+// 而是每页多查 1 条、看有没有查到来判断，省一次往返。
+export type ListSessionsResponse = { sessions: SessionSummary[]; hasMore: boolean }
+
+// GET /api/sessions/:id/messages/count 的响应结构——只返回数量，不带
+// 消息正文。consoleStore 在提交新任务前用它记一个"提交前基准值"，只在
+// SSE 掉线后走轮询兜底时才用得上，没必要为了数一下数量就把可能很大的
+// 消息正文整个传一遍（见 apps/web/src/store/consoleStore.ts 的 run()）。
+export type SessionMessageCountResponse = { count: number }
+
+// PATCH /api/sessions/:id 的线上传输结构——name 为 null 或空字符串表示
+// 清除自定义标题，落回显示第一条用户消息的 preview。
+export type RenameSessionRequest = { name: string | null }
+
+export const MAX_SESSION_NAME_LENGTH = 100
 
 // 生成直传 R2 的上传槽位所用的请求/响应结构。目前还没有绑定到具体的
 // 端点 —— apps/server 目前只暴露了 artifact 下载那一侧（参见 lib/storage.ts

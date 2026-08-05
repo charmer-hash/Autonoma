@@ -46,6 +46,12 @@ export const sessions = pgTable('sessions', {
   // （全新会话，或其沙箱已过期）。不是外键，
   // 只是一个由 e2b 自身管理生命周期的不透明字符串。
   sandboxId: text('sandbox_id'),
+  // 用户手动改的会话标题——null 表示从未重命名过，这种情况下侧边栏/
+  // 搜索用的展示名称落回第一条用户消息的文本（见 db/sessions.ts 的
+  // listSessions）。长度上限只在 API 层校验（见 index.ts），跟
+  // customInstructions 同样的理由：数据库层的硬约束会把体验做成
+  // "提交后才报错"。
+  name: text('name'),
 }, (table) => ([
   // listSessions 按 ownerId 过滤、按 updatedAt 排序 —— 见 db/sessions.ts。
   index('sessions_owner_id_idx').on(table.ownerId),

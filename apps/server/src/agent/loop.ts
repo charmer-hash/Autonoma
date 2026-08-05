@@ -194,6 +194,16 @@ export async function* runAgentLoop(
           break
         } catch (err) {
           if (!yieldedAnything && attempt < MAX_STREAM_RETRIES && isTransientStreamError(err)) {
+            // 这次失败的尝试的用量/费用永远拿不到了——OpenRouter 只在流
+            // 正常结束的收尾 chunk 里带 usage/cost，连接在那之前就断开的话，
+            // 即使服务商已经处理（甚至计费）了这次的 prompt，这里也无从
+            // 得知具体数字，没法记进 insertUsageEvent、也就不计入每日额度。
+            // retry 的触发条件（!yieldedAnything）已经把实际敞口限制得
+            // 很小，但至少留一条日志痕迹，方便账单出现异常时能回溯到
+            // 具体是哪个会话、第几次重试导致的。
+            console.warn(
+              `[agent] stream retry (session=${sessionId}, model=${modelForThisCall}, attempt=${attempt + 1}/${MAX_STREAM_RETRIES}): usage for the failed attempt is unrecoverable and will not be recorded. cause: ${err instanceof Error ? err.message : String(err)}`,
+            )
             continue
           }
           throw new Error(
@@ -345,6 +355,17 @@ export async function* runAgentLoop(
           }
         }
         continue
+      }
+
+      // finish_reason === 'length' 意味着这段回复是被模型自己的单次输出
+      // 长度上限截断的，不是真正说完了——之前这里跟正常的 'stop' 走的是
+      // 同一条路径，用户会看到一个"看起来正常收尾"的回复，实际上可能
+      // 在句子中间被硬切断，且没有任何提示。这里补一条可见的说明，
+      // 同时写回持久化的 messages，让历史记录里也能看出这一轮被截断过。
+      if (finishReason === 'length') {
+        const note = '\n\n（回复因达到模型单次输出的长度上限被截断，如需继续可以让我接着说。）'
+        content += note
+        yield { type: 'text_delta', delta: note }
       }
 
       messages.push({ role: 'assistant', content })

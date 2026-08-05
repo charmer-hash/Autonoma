@@ -60,14 +60,12 @@ export function ArtifactCard({ block }: { block: Extract<Block, { kind: 'artifac
           <div className="text-xs text-muted-foreground">{formatBytes(block.size)}</div>
         </div>
         {previewable && (
-          <Button variant="outline" size="sm" onClick={openPreview}>
+          <Button variant="ghost" size="icon-sm" onClick={openPreview} aria-label={`预览 ${block.name}`}>
             <Maximize2 className="size-4" />
-            预览
           </Button>
         )}
-        <Button variant="outline" size="sm" render={<a href={url} />}>
+        <Button variant="ghost" size="icon-sm" aria-label={`下载 ${block.name}`} render={<a href={url} />}>
           <Download className="size-4" />
-          下载
         </Button>
       </div>
       <FilePreviewDialog file={previewOpen ? block : null} onClose={() => setPreviewOpen(false)} />

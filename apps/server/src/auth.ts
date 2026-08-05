@@ -8,7 +8,9 @@ const SESSION_MAX_AGE = 60 * 60 * 24 * 7 // 7 天
 // 生产环境下前后端跨站（域名不同）需要 SameSite=None，而浏览器
 // 只有在同时带 Secure 的情况下才会认可这个设置——而 Secure cookie
 // 不会通过普通 http 发送，本地开发用的正是普通 http。
-const isProd = process.env.NODE_ENV === 'production'
+// 导出给 index.ts 复用（比如 CORS_ORIGIN 的生产环境强制校验），
+// 避免"是不是生产环境"这个判断在两个地方各写一份、以后各自漂移。
+export const isProd = process.env.NODE_ENV === 'production'
 
 // 账号信息存放在 users 表里（参见 scripts/create-user.ts）——这个
 // 标志只决定是否要强制启用登录/归属校验，所以本地开发时即使

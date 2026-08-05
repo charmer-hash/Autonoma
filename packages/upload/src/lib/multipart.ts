@@ -139,10 +139,12 @@ async function uploadPartWithRetry(
 ): Promise<string> {
   for (let attempt = 0; ; attempt++) {
     if (ctx.signal.aborted) throw new DOMException('上传已取消。', 'AbortError')
-    // 每次重试都重新生成，而不是复用——在网速慢或不稳定的连接下，
-    // 预签名 URL 本身也可能在上传过程中过期。
-    const { url } = await ctx.getPartUrl({ key: ctx.key, uploadId: ctx.uploadId, partNumber: index + 1 })
     try {
+      // 每次重试都重新生成，而不是复用——在网速慢或不稳定的连接下，
+      // 预签名 URL 本身也可能在上传过程中过期。这一步本身（打给自家
+      // 后端的请求）之前不在这个 try 里，一次瞬时的服务端抖动就会让
+      // 整次上传直接失败，而不是像真正的 R2 PUT 失败那样重试几次。
+      const { url } = await ctx.getPartUrl({ key: ctx.key, uploadId: ctx.uploadId, partNumber: index + 1 })
       return await putPart(url, chunk, ctx.signal, ctx.onPartProgress)
     } catch (err) {
       const isAbort = err instanceof DOMException && err.name === 'AbortError'

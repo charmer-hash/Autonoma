@@ -1,0 +1,21 @@
+# apps/server/Dockerfile 的构建上下文是仓库根目录（见该文件顶部注释），
+# pruner 阶段会 COPY . . 把整个上下文原样复制进一层镜像 layer——.gitignore
+# 管不到 docker build，之前没有 .dockerignore 意味着本地 .env（真实密钥）、
+# node_modules、.git 全部历史都会被复制进这一层，即使后续阶段没有再往下
+# 传，这层本身依然是构建缓存/镜像历史的一部分，一旦被 push 到镜像仓库或者
+# 用 docker history/save 检查就会泄露。这里排除的内容和 .gitignore 保持
+# 一致，再加上 node_modules/.git 这些没必要进构建上下文、只会让构建变慢
+# 的东西。
+node_modules
+**/node_modules
+dist
+**/dist
+.env
+.env.*
+!.env.example
+!**/.env.example
+.turbo
+**/.turbo
+*.tsbuildinfo
+.DS_Store
+.git

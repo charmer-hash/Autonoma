@@ -215,7 +215,7 @@ function AttachmentChip({ attachment, onRemove }: { attachment: ComposerAttachme
         type="button"
         onClick={onRemove}
         aria-label={`移除 ${file.name}`}
-        className="relative z-10 flex size-3.5 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:text-foreground"
+        className="relative z-10 flex size-3.5 shrink-0 items-center justify-center rounded-full text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:bg-muted focus-visible:text-foreground"
       >
         <X className="size-3.5" />
       </button>

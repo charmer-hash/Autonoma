@@ -1,4 +1,5 @@
 import { serve } from '@hono/node-server'
+import { getConnInfo } from '@hono/node-server/conninfo'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { logger } from 'hono/logger'
@@ -9,12 +10,14 @@ import {
   MAX_CUSTOM_INSTRUCTIONS_LENGTH,
   MAX_MAX_TURNS,
   MAX_SANDBOX_IDLE_MINUTES,
+  MAX_SESSION_NAME_LENGTH,
   MIN_MAX_TURNS,
   MIN_SANDBOX_IDLE_MINUTES,
   type AgentEvent,
   type AgentSettings,
   type AgentSettingsResponse,
   type AuthMeResponse,
+  type ListSessionsResponse,
   type LoginRequest,
   type MultipartCompleteRequest,
   type MultipartCreateRequest,
@@ -24,25 +27,43 @@ import {
   type PresignedUpload,
   type PresignedUploadRequest,
   type PublicKeyResponse,
+  type RenameSessionRequest,
+  type SessionMessageCountResponse,
   type UpdateAgentSettingsRequest,
   type UpdateAgentSettingsResponse,
   type UploadedAttachment,
 } from '@autonoma/shared'
 import { resolveApproval } from './agent/approvals.js'
+import {
+  attachSink,
+  clearSessionDeleting,
+  detachSink,
+  finishRun,
+  isRunActive,
+  isRunInProgress,
+  markSessionDeleting,
+  publish,
+  tryStartRun,
+  waitForFinish,
+} from './agent/active-runs.js'
 import { runAgentLoop } from './agent/loop.js'
 import { MAX_VISION_IMAGE_BYTES, type PendingVisionImage } from './agent/tools/vision.js'
-import { authenticate, clearSession, createSession, getOwnerId, isAuthenticated, requireAuth } from './auth.js'
+import { authenticate, clearSession, createSession, getOwnerId, isAuthenticated, isProd, requireAuth } from './auth.js'
 import { decryptPassword, getPublicKeyBase64 } from './lib/login-crypto.js'
+import { checkLoginRateLimit, clearLoginAttempts, recordLoginFailure, resolveClientIp } from './lib/login-rate-limit.js'
 import { getLatestAttachmentByFilename, insertAttachment } from './db/attachments.js'
 import { getDailyCostUsd } from './db/usage.js'
 import { getArtifactById } from './db/artifacts.js'
 import { runMigrations } from './db/migrate.js'
 import {
   appendMessages,
+  deleteSession,
   getSandboxId,
+  getSessionMessageCount,
   listSessions,
   loadSessionMessages,
   loadSessionMessagesForAgent,
+  renameSession,
   resolveSessionAccess,
   setSandboxId,
 } from './db/sessions.js'
@@ -172,6 +193,17 @@ async function attachFilesToSandbox(
   return { note, visionImages }
 }
 
+// 生产环境下前后端通常不同源，必须显式配置允许的源——Hono 的 cors()
+// 在 origin 为 '*' 时会原样发送 `Access-Control-Allow-Origin: *`，
+// 浏览器规范规定这种字面量通配符跟 credentials:true 组合时，凭证请求
+// 会被直接拒绝暴露给前端 JS（不是漏洞，但表现为所有登录态请求诡异地
+// 全部失败，且没有任何明确报错指向"忘了配 CORS_ORIGIN"这个根因）。
+// 与其留一个生产环境下实际上是死代码的默认值，不如启动时就直接报错。
+const corsOrigin = process.env.CORS_ORIGIN?.split(',')
+if (isProd && !corsOrigin) {
+  throw new Error('CORS_ORIGIN 未设置——生产环境必须显式配置允许的跨域来源，而不是回退到会静默破坏所有登录态请求的通配符。')
+}
+
 const app = new Hono()
 
 app.use('*', logger())
@@ -179,10 +211,32 @@ app.use('*', logger())
 app.use(
   '*',
   cors({
-    origin: process.env.CORS_ORIGIN?.split(',') ?? '*',
+    origin: corsOrigin ?? '*',
     credentials: true,
   }),
 )
+
+// CSRF 防护：登录态是 SameSite=None 的 cookie（跨域前后端所必需），单靠
+// CORS_ORIGIN 挡不住——CORS 只限制"跨站页面能不能读到响应"，不限制"请求
+// 能不能被发送、被服务端处理"。攻击者的页面完全可以用一个 Content-Type:
+// text/plain 的简单请求（不触发预检）直接把 JSON body 打到
+// /api/agent/run 之类的接口上，浏览器照样带上受害者的 cookie，Hono 的
+// c.req.json() 也不检查 Content-Type，一样能被解析——所以之前是真的没有
+// 防护。这里要求所有会改动状态的请求都必须带上一个自定义请求头：自定义
+// 请求头不在 CORS 的"简单请求"白名单里，浏览器会强制先发一次预检
+// （OPTIONS），预检能不能过是由上面的 CORS 配置（只认 CORS_ORIGIN 里列出
+// 的源）决定的——一个不在白名单里的源，从一开始就拿不到这个头，请求也就
+// 发不出去。GET/HEAD/OPTIONS 天然不改动状态，不需要这层校验；OPTIONS
+// 还必须放行，否则预检本身都过不去。
+app.use('*', async (c, next) => {
+  const method = c.req.method
+  if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+    if (c.req.header('X-Requested-With') !== 'XMLHttpRequest') {
+      return c.json({ error: '缺少必要的请求头。' }, 403)
+    }
+  }
+  await next()
+})
 
 app.get('/health', (c) => c.json({ ok: true }))
 
@@ -194,6 +248,15 @@ app.get('/api/auth/public-key', (c) => {
 })
 
 app.post('/api/auth/login', async (c) => {
+  // 按来源 IP 限流——挡住对着这个接口狂刷用户名/密码组合的暴力破解
+  // 尝试（见 lib/login-rate-limit.ts）。被锁定时直接拒绝、不再往下跑
+  // RSA 解密和 scrypt 比对，省下无意义的计算。
+  const ip = resolveClientIp(c.req.header('x-forwarded-for'), getConnInfo(c).remote.address)
+  const rate = checkLoginRateLimit(ip)
+  if (!rate.allowed) {
+    return c.json({ error: `登录尝试过于频繁，请 ${Math.ceil(rate.retryAfterMs / 60_000)} 分钟后重试。` }, 429)
+  }
+
   const body = await c.req
     .json<Partial<LoginRequest>>()
     .catch(() => ({}) as Partial<LoginRequest>)
@@ -204,13 +267,16 @@ app.post('/api/auth/login', async (c) => {
   try {
     decryptedPassword = decryptPassword(body.password)
   } catch (err) {
+    recordLoginFailure(ip)
     return c.json({ error: err instanceof Error ? err.message : '登录请求格式不正确。' }, 400)
   }
 
   const ownerId = await authenticate(body.username, decryptedPassword)
   if (!ownerId) {
+    recordLoginFailure(ip)
     return c.json({ error: '用户名或密码错误' }, 401)
   }
+  clearLoginAttempts(ip)
   await createSession(c, ownerId)
   return c.json({ ok: true })
 })
@@ -284,10 +350,20 @@ app.put('/api/settings', requireAuth, async (c) => {
   return c.json({ ok: true, persisted: true } satisfies UpdateAgentSettingsResponse)
 })
 
+// limit/offset/search 都是可选的——不传就是原来的行为（前 50 条，
+// 不过滤）。limit 上限 100，避免客户端传一个离谱的大数把整表拉回来。
 app.get('/api/sessions', requireAuth, async (c) => {
   const ownerId = await getOwnerId(c)
-  const sessions = await listSessions(ownerId)
-  return c.json({ sessions })
+  const rawLimit = Number(c.req.query('limit'))
+  const rawOffset = Number(c.req.query('offset'))
+  const limit = Number.isInteger(rawLimit) && rawLimit > 0 && rawLimit <= 100 ? rawLimit : 50
+  const offset = Number.isInteger(rawOffset) && rawOffset >= 0 ? rawOffset : 0
+  const search = c.req.query('search')
+  const { sessions, hasMore } = await listSessions(ownerId, { limit, offset, search })
+  return c.json({
+    sessions: sessions.map((s) => ({ ...s, updatedAt: s.updatedAt.toISOString() })),
+    hasMore,
+  } satisfies ListSessionsResponse)
 })
 
 app.get('/api/sessions/:id', requireAuth, async (c) => {
@@ -299,6 +375,66 @@ app.get('/api/sessions/:id', requireAuth, async (c) => {
   if (access === 'not_found') return c.json({ error: '会话不存在。' }, 404)
   const messages = await loadSessionMessages(sessionId, ownerId)
   return c.json({ messages })
+})
+
+// 只返回消息数，不带正文——consoleStore 在提交新任务前用它记一个"提交
+// 前基准值"（见 apps/web/src/store/consoleStore.ts 的 run()），只在 SSE
+// 掉线后走轮询兜底时才用得上，不值得为此拉一遍完整的消息历史。
+app.get('/api/sessions/:id/messages/count', requireAuth, async (c) => {
+  const sessionId = c.req.param('id')
+  if (!sessionId) return c.json({ error: 'Missing session id.' }, 400)
+  const ownerId = await getOwnerId(c)
+  const access = await resolveSessionAccess(sessionId, ownerId)
+  if (access === 'forbidden') return c.json({ error: '无权访问该会话。' }, 403)
+  if (access === 'not_found') return c.json({ error: '会话不存在。' }, 404)
+  const count = await getSessionMessageCount(sessionId)
+  return c.json({ count } satisfies SessionMessageCountResponse)
+})
+
+// name 传空字符串（trim 之后）表示清除自定义标题，落回显示 preview——
+// 不是把空字符串当成一个"合法但空"的标题存起来。
+app.patch('/api/sessions/:id', requireAuth, async (c) => {
+  const sessionId = c.req.param('id')
+  if (!sessionId) return c.json({ error: 'Missing session id.' }, 400)
+  const ownerId = await getOwnerId(c)
+  const access = await resolveSessionAccess(sessionId, ownerId)
+  if (access === 'forbidden') return c.json({ error: '无权访问该会话。' }, 403)
+  if (access === 'not_found') return c.json({ error: '会话不存在。' }, 404)
+
+  const body = await c.req.json<Partial<RenameSessionRequest>>().catch(() => ({}) as Partial<RenameSessionRequest>)
+  const trimmed = typeof body.name === 'string' ? body.name.trim() : ''
+  if (trimmed.length > MAX_SESSION_NAME_LENGTH) {
+    return c.json({ error: `标题过长，最多 ${MAX_SESSION_NAME_LENGTH} 个字符。` }, 400)
+  }
+  await renameSession(sessionId, trimmed || null)
+  return c.json({ ok: true })
+})
+
+app.delete('/api/sessions/:id', requireAuth, async (c) => {
+  const sessionId = c.req.param('id')
+  if (!sessionId) return c.json({ error: 'Missing session id.' }, 400)
+  const ownerId = await getOwnerId(c)
+  const access = await resolveSessionAccess(sessionId, ownerId)
+  if (access === 'forbidden') return c.json({ error: '无权访问该会话。' }, 403)
+  if (access === 'not_found') return c.json({ error: '会话不存在。' }, 404)
+  // 另一个标签页/设备可能正在这个会话里跑一轮对话——真删掉会导致那一轮
+  // 跑完后落库时因为外键约束失败，静默丢掉这条回复。用 isRunInProgress
+  // 而不是 isRunActive：后者对刚跑完、还在宽限期内等重连补读的记录也
+  // 返回 true，会话正常应该能删，不该被最近一次已完成的对话挡住。
+  if (isRunInProgress(sessionId)) {
+    return c.json({ error: '该会话有一条消息正在处理中，请稍候再试。' }, 409)
+  }
+  // 紧接着 isRunInProgress 检查、不隔任何 await 地标记"正在删除"——堵住
+  // 上面检查和下面真正的数据库删除之间那段 await 期间可能出现的竞态：
+  // 另一个请求在这段时间里调用 tryStartRun（纯同步操作）抢先开始新一轮，
+  // 见 active-runs.ts 里 markSessionDeleting 的注释。
+  markSessionDeleting(sessionId)
+  try {
+    await deleteSession(sessionId)
+  } finally {
+    clearSessionDeleting(sessionId)
+  }
+  return c.json({ ok: true })
 })
 
 app.get('/api/artifacts/:id', requireAuth, async (c) => {
@@ -501,6 +637,17 @@ app.post('/api/agent/run', requireAuth, async (c) => {
   const isNewSession = !accessibleSessionId
   const sessionId: string = accessibleSessionId ?? crypto.randomUUID()
 
+  // 同一个 session 同时只允许一条运行中的请求——两个标签页/一次网络重试
+  // 几乎同时发消息时，第二个会在这里直接被拒绝，而不是两边都去连接/操作
+  // 同一个沙箱。全新会话的 sessionId 是本次请求现生成的 uuid，天然不会
+  // 和任何其它请求撞上，这里始终会成功。见 agent/active-runs.ts。runId
+  // 是这条 run 的身份标识，之后会随每个 SSE 帧的 id 字段一起发给客户端，
+  // 断线重连时客户端要原样带回来——见下面 reconnect 路由的注释。
+  const runId = tryStartRun(sessionId)
+  if (!runId) {
+    return c.json({ error: '该会话有一条消息正在处理中，请稍候再试。' }, 409)
+  }
+
   // 提前一次性加载好，供下面的沙箱创建/超时设置和 runAgentLoop 共用——
   // 读取失败（数据库瞬时抖动）不应该让整个任务跑不起来，静默回退到默认设置。
   const settings: AgentSettings = ownerId
@@ -512,75 +659,164 @@ app.post('/api/agent/run', requireAuth, async (c) => {
   const sandboxIdleTtlMs = settings.sandboxIdleMinutes * 60_000
 
   return streamSSE(c, async (stream) => {
-    async function sendError(message: string) {
-      const event: AgentEvent = { type: 'error', message }
-      await stream.writeSSE({ event: 'error', data: JSON.stringify(event) })
-    }
-
-    if (isNewSession) {
-      const event: AgentEvent = { type: 'session', sessionId }
-      await stream.writeSSE({ event: 'session', data: JSON.stringify(event) })
-    }
-
-    // 如果该会话的沙箱还存活就复用它（参见下面的 setSandboxId），
-    // 而不是每次都付出冷启动 Sandbox.create() 的代价——这也是为什么
-    // 前面某一轮生成的文件到了后面调用 export_artifact 时依然存在的
-    // 原因。只要重连因为任何原因失败（过期、被回收、或从未存在过），
-    // 就回退到创建一个全新的沙箱。
-    let sandbox: Sandbox | undefined
-    const existingSandboxId = await getSandboxId(sessionId).catch(() => null)
-    if (existingSandboxId) {
-      try {
-        sandbox = await Sandbox.connect(existingSandboxId)
-      } catch {
-        sandbox = undefined
-      }
-    }
-    if (!sandbox) {
-      try {
-        // e2b 创建偶尔会因为瞬时网络错误而失败——值得先重试几次，
-        // 再放弃并告知用户。
-        sandbox = await withRetry(() => Sandbox.create({ timeoutMs: sandboxIdleTtlMs }), 3, 500)
-      } catch (err) {
-        console.error('Sandbox.create failed:', err)
-        await sendError('沙箱环境创建失败，请稍后重试。')
-        return
-      }
-    }
+    // 本连接自己就是这次运行的第一个订阅者——所有事件都经 publish() 走
+    // active-runs 的缓冲区再分发到这里，而不是直接 stream.writeSSE，这样
+    // 断线重连的客户端才能通过同一份缓冲区补上错过的内容（见
+    // agent/active-runs.ts、下面新增的 GET /api/agent/run/:sessionId/reconnect）。
+    // SSE 帧的 id 字段编码成 `${runId}:${seq}`——runId 让客户端断线重连时
+    // 能告诉服务端"我要接上的是哪一条 run"，而不只是"这个 session 现在
+    // 随便哪条 run"（同一个 session 生命周期里会顺序跑很多条 run，seq 在
+    // 每条新 run 里都从 0 重新计数，只按 sessionId 找会有把新一轮的
+    // 内容错当成旧一轮续集发出去的风险，见 active-runs.ts attachSink 的
+    // 注释）。这里不需要改动 AgentEvent 本身的 JSON 结构。
+    const sink = (buffered: { seq: number; event: AgentEvent }) =>
+      stream.writeSSE({ event: buffered.event.type, data: JSON.stringify(buffered.event), id: `${runId}:${buffered.seq}` })
+    // afterSeq=-1 且这条 run 刚创建、events 必然是空的——补发循环这里永远
+    // 是 0 次迭代，attachSink 不会有实质性的等待，不需要像 reconnect 路由
+    // 那样处理"补发过程中断线"的竞态（那边的补发经常有真正的历史事件要发）。
+    await attachSink(sessionId, runId, -1, sink)
+    // 断线后不用再对着一个死连接做无意义的写入尝试——但这不影响 run 本身
+    // 继续跑下去（这正是这个功能的核心：run 不依赖任何一条具体连接），
+    // 其它已经/后续重连的 sink 一样能收到事件，finishRun 仍会在下面的
+    // 外层 finally 里正常执行，并发锁不会因为这条连接断开而卡住。
+    stream.onAbort(() => detachSink(sessionId, sink))
 
     try {
-      const messages = await loadSessionMessagesForAgent(sessionId, ownerId)
-      // 此时这一行记录必然已经存在（loadSessionMessagesForAgent 刚刚
-      // 访问过它）——可以放心持久化保存这个会话归属的沙箱，这样这个
-      // 对话里的下一条消息也能重新连接上它。
-      await setSandboxId(sessionId, sandbox.sandboxId).catch((err) =>
-        console.error('failed to persist sandboxId:', err),
-      )
-      const turnStart = messages.length
-      const { note: attachmentNote, visionImages } = await attachFilesToSandbox(sandbox, sessionId, attachments, ownerId)
-      messages.push({ role: 'user', content: task + attachmentNote })
+      async function sendError(message: string) {
+        publish(sessionId, { type: 'error', message })
+      }
+
+      if (isNewSession) {
+        publish(sessionId, { type: 'session', sessionId })
+      }
+
+      // 如果该会话的沙箱还存活就复用它（参见下面的 setSandboxId），
+      // 而不是每次都付出冷启动 Sandbox.create() 的代价——这也是为什么
+      // 前面某一轮生成的文件到了后面调用 export_artifact 时依然存在的
+      // 原因。只要重连因为任何原因失败（过期、被回收、或从未存在过），
+      // 就回退到创建一个全新的沙箱。
+      let sandbox: Sandbox | undefined
+      const existingSandboxId = await getSandboxId(sessionId).catch(() => null)
+      if (existingSandboxId) {
+        try {
+          sandbox = await Sandbox.connect(existingSandboxId)
+        } catch {
+          sandbox = undefined
+        }
+      }
+      if (!sandbox) {
+        try {
+          // e2b 创建偶尔会因为瞬时网络错误而失败——值得先重试几次，
+          // 再放弃并告知用户。
+          sandbox = await withRetry(() => Sandbox.create({ timeoutMs: sandboxIdleTtlMs }), 3, 500)
+        } catch (err) {
+          console.error('Sandbox.create failed:', err)
+          await sendError('沙箱环境创建失败，请稍后重试。')
+          return
+        }
+      }
 
       try {
-        for await (const event of runAgentLoop(messages, sandbox, sessionId, visionImages, settings, ownerId)) {
-          await stream.writeSSE({ event: event.type, data: JSON.stringify(event) })
-        }
-      } finally {
-        // 即使出错也要把这一轮产生的内容持久化下来——runAgentLoop
-        // 会就地修改 `messages`，所以就算这一轮没跑完，里面也已经有
-        // 有价值的历史记录了。
-        await appendMessages(sessionId, messages.slice(turnStart)).catch((err) =>
-          console.error('failed to persist conversation turn:', err),
+        const messages = await loadSessionMessagesForAgent(sessionId, ownerId)
+        // 此时这一行记录必然已经存在（loadSessionMessagesForAgent 刚刚
+        // 访问过它）——可以放心持久化保存这个会话归属的沙箱，这样这个
+        // 对话里的下一条消息也能重新连接上它。
+        await setSandboxId(sessionId, sandbox.sandboxId).catch((err) =>
+          console.error('failed to persist sandboxId:', err),
         )
+        const turnStart = messages.length
+        const { note: attachmentNote, visionImages } = await attachFilesToSandbox(sandbox, sessionId, attachments, ownerId)
+        messages.push({ role: 'user', content: task + attachmentNote })
+
+        try {
+          for await (const event of runAgentLoop(messages, sandbox, sessionId, visionImages, settings, ownerId)) {
+            publish(sessionId, event)
+          }
+        } finally {
+          // 即使出错也要把这一轮产生的内容持久化下来——runAgentLoop
+          // 会就地修改 `messages`，所以就算这一轮没跑完，里面也已经有
+          // 有价值的历史记录了。
+          await appendMessages(sessionId, messages.slice(turnStart)).catch((err) =>
+            console.error('failed to persist conversation turn:', err),
+          )
+        }
+      } catch (err) {
+        console.error(err)
+        await sendError(err instanceof Error ? err.message : String(err))
+      } finally {
+        // 并不是把它杀掉——而是延长它的存活时间，这样这个会话在时间窗口
+        // 内的下一条消息还能重新连接上同一个沙箱。没人再回来用的沙箱会
+        // 通过 e2b 自身的超时机制自然过期；这里不需要做任何显式清理。
+        await sandbox.setTimeout(sandboxIdleTtlMs).catch((err) => console.error('sandbox.setTimeout failed:', err))
       }
-    } catch (err) {
-      console.error(err)
-      await sendError(err instanceof Error ? err.message : String(err))
     } finally {
-      // 并不是把它杀掉——而是延长它的存活时间，这样这个会话在时间窗口
-      // 内的下一条消息还能重新连接上同一个沙箱。没人再回来用的沙箱会
-      // 通过 e2b 自身的超时机制自然过期；这里不需要做任何显式清理。
-      await sandbox.setTimeout(sandboxIdleTtlMs).catch((err) => console.error('sandbox.setTimeout failed:', err))
+      // 无论上面走到哪条路径（正常完成/沙箱创建失败提前 return/未预期的异常），
+      // 都要在这里收尾：把这条运行标记为 finished（唤醒所有等待中的 reconnect
+      // 连接、释放并发锁），并把本连接自己的 sink 摘掉。
+      detachSink(sessionId, sink)
+      finishRun(sessionId)
     }
+  })
+})
+
+// 客户端 SSE 连接中途断开后用来重新接上同一条正在运行的 agent 循环——
+// 不会重新发起任务，只是从自己记得的最后一个 seq 继续订阅
+// active-runs 缓冲区（见 agent/active-runs.ts 顶部注释）。如果这个
+// session 当前没有一条 id 匹配 runId 的活跃 run（本来就没在跑、已经跑完
+// 且过了宽限期，或者宽限期内已经又开始了下一轮全新的 run——runId 会
+// 对不上，见 active-runs.ts attachSink 的注释），返回 404，客户端应退回到
+// GET /api/sessions/:id 读取最终的持久化结果。
+app.get('/api/agent/run/:sessionId/reconnect', requireAuth, async (c) => {
+  const sessionId = c.req.param('sessionId')
+  const runId = c.req.query('runId')
+  if (!sessionId || !runId) return c.json({ error: 'Missing sessionId / runId.' }, 400)
+  const ownerId = await getOwnerId(c)
+  const access = await resolveSessionAccess(sessionId, ownerId)
+  if (access === 'forbidden') return c.json({ error: '无权访问该会话。' }, 403)
+  if (access === 'not_found') return c.json({ error: '会话不存在。' }, 404)
+
+  if (!isRunActive(sessionId, runId)) {
+    return c.json({ error: 'no_active_run' }, 404)
+  }
+
+  const afterSeqRaw = Number(c.req.query('after'))
+  const afterSeq = Number.isFinite(afterSeqRaw) ? afterSeqRaw : -1
+
+  return streamSSE(c, async (stream) => {
+    const sink = (buffered: { seq: number; event: AgentEvent }) =>
+      stream.writeSSE({ event: buffered.event.type, data: JSON.stringify(buffered.event), id: `${runId}:${buffered.seq}` })
+
+    // onAbort 必须先注册、再调用 attachSink——这里的补发循环经常有真正的
+    // 历史事件要一条条 await 写完，如果反过来，客户端恰好在补发过程中
+    // 断开，这个 abort 会在监听器还没注册时就发生并被永久错过：
+    // attachSink 补发完之后仍会把这个（其实已经死掉的）sink 注册进去，
+    // 直到这条 run 结束才被动清理，期间白白多做一堆注定失败的写入尝试，
+    // 这个 handler 本身也会一直悬着不提前退出。同一个监听器全程只注册
+    // 这一次，既用来在补发阶段短路退出，也用来给下面的 Promise.race 提供
+    // "连接断开了"这一信号。
+    let aborted = false
+    let resolveAbort: (() => void) | undefined
+    const abortPromise = new Promise<void>((resolve) => {
+      resolveAbort = resolve
+    })
+    stream.onAbort(() => {
+      aborted = true
+      detachSink(sessionId, sink)
+      resolveAbort?.()
+    })
+
+    const attached = await attachSink(sessionId, runId, afterSeq, sink)
+    if (aborted) return
+    if (!attached) {
+      // 上面 isRunActive 检查和这里 attachSink 之间存在极小的时间窗口——
+      // run 恰好在这中间跑完并被清理掉。补一条明确的错误事件，让客户端
+      // 当作一次真正的失败处理，而不是把它误判成又一次断线从而无限重试。
+      await stream.writeSSE({ event: 'error', data: JSON.stringify({ type: 'error', message: '重连失败，请刷新查看最新记录。' } satisfies AgentEvent) })
+      return
+    }
+    if (attached.finished) return // 缓冲区里剩余的事件已经补发完，直接收尾即可
+
+    await Promise.race([waitForFinish(sessionId), abortPromise])
   })
 })
 

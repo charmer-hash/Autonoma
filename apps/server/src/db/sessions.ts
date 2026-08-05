@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, isNull, sql } from 'drizzle-orm'
+import { and, eq, gt, sql } from 'drizzle-orm'
 import type OpenAI from 'openai'
 import { createInitialMessages } from '../agent/loop.js'
 import { planFold, summarizeFold, type MessageRow } from '../agent/compaction.js'
@@ -8,26 +8,74 @@ import { messages, sessions } from './schema.js'
 
 export type SessionAccess = 'owned' | 'forbidden' | 'not_found'
 
-export type SessionSummary = { id: string; updatedAt: Date; preview: string | null }
+export type SessionSummary = { id: string; updatedAt: Date; preview: string | null; name: string | null }
 
-export async function listSessions(ownerId: string | undefined, limit = 50): Promise<SessionSummary[]> {
-  // 这里显式使用带表名限定的 `sessions.id`，而不是直接插值 drizzle 的
-  // column 对象 —— 在这里插值会渲染出不带表限定的列名，在这个相关子查询中
-  // 会被解析成 messages.id（bigint）而不是外层的 sessions.id（text），
-  // 从而报错 "operator does not exist: text = bigint"。
-  const previewExpr = sql<string | null>`(
-    select msg.message->>'content' from messages msg
-    where msg.session_id = sessions.id and msg.message->>'role' = 'user'
-    order by msg.id asc limit 1
-  )`
-  return withRetry(() =>
-    db
-      .select({ id: sessions.id, updatedAt: sessions.updatedAt, preview: previewExpr })
-      .from(sessions)
-      .where(ownerId ? eq(sessions.ownerId, ownerId) : isNull(sessions.ownerId))
-      .orderBy(desc(sessions.updatedAt))
-      .limit(limit),
-  )
+export async function listSessions(
+  ownerId: string | undefined,
+  opts: { limit?: number; offset?: number; search?: string } = {},
+): Promise<{ sessions: SessionSummary[]; hasMore: boolean }> {
+  const limit = opts.limit ?? 50
+  const offset = opts.offset ?? 0
+  const trimmedSearch = opts.search?.trim()
+
+  // preview（第一条用户消息的文本）是靠相关子查询算出来的、不是
+  // sessions 表上真实存在的列。
+  const ownerFilter = ownerId ? sql`sessions.owner_id = ${ownerId}` : sql`sessions.owner_id is null`
+  const previewExpr = sql`(select msg.message->>'content' from messages msg
+     where msg.session_id = sessions.id and msg.message->>'role' = 'user'
+     order by msg.id asc limit 1)`
+
+  // updated_at 的类型标注是 string，不是 Date——db.execute 是原生驱动
+  // 结果，不经过 drizzle 的列类型映射，实际拿到的是 Postgres 自己的
+  // 文本表示，下面 map 里会显式 new Date(...) 转换（详见那里的注释）。
+  type Row = { id: string; updated_at: string; name: string | null; preview: string | null }
+
+  // 没有搜索词时，preview 只用来展示，不参与过滤/排序——这时直接放在
+  // 最外层 SELECT 列表里，Postgres 只会对 LIMIT/OFFSET 之后真正要返回
+  // 的那一页行求值这个相关子查询，而不是对这个 owner 名下的每个会话都
+  // 算一遍（每算一次都要去 messages 表按 session_id 找第一条用户消息）。
+  //
+  // 有搜索词时就没法这么偷懒了——必须先把每一行的 preview 算出来才能
+  // 拿它去做 ilike 过滤，只能退回到"内层子查询先算、外层再过滤"的写法，
+  // 多查 1 条（limit+1）用来判断 hasMore，省一次单独的 COUNT 查询。
+  const result = trimmedSearch
+    ? await withRetry(() =>
+        db.execute<Row>(sql`
+          select t.id, t.updated_at, t.name, t.preview from (
+            select
+              sessions.id as id,
+              sessions.updated_at as updated_at,
+              sessions.name as name,
+              ${previewExpr} as preview
+            from sessions
+            where ${ownerFilter}
+          ) t
+          where t.name ilike ${'%' + trimmedSearch + '%'} or t.preview ilike ${'%' + trimmedSearch + '%'}
+          order by t.updated_at desc
+          limit ${limit + 1} offset ${offset}
+        `),
+      )
+    : await withRetry(() =>
+        db.execute<Row>(sql`
+          select
+            sessions.id as id,
+            sessions.updated_at as updated_at,
+            sessions.name as name,
+            ${previewExpr} as preview
+          from sessions
+          where ${ownerFilter}
+          order by sessions.updated_at desc
+          limit ${limit + 1} offset ${offset}
+        `),
+      )
+
+  const rows = result.rows
+  const hasMore = rows.length > limit
+  const page = hasMore ? rows.slice(0, limit) : rows
+  return {
+    sessions: page.map((r) => ({ id: r.id, updatedAt: new Date(r.updated_at), name: r.name, preview: r.preview })),
+    hasMore,
+  }
 }
 
 // 调用方必须在用客户端提供的 sessionId 调用 loadSessionMessages 之前
@@ -44,6 +92,23 @@ export async function resolveSessionAccess(
   const storedOwner = rows[0].ownerId
   if (!storedOwner || !ownerId || storedOwner === ownerId) return 'owned'
   return 'forbidden'
+}
+
+// name 传 null（或调用方在 index.ts 里把空字符串 trim 成的 null）会清除
+// 自定义标题，落回 listSessions 里算出来的 preview——调用方必须已经
+// 校验过归属（比如先调用 resolveSessionAccess），这里不重复检查。
+export async function renameSession(sessionId: string, name: string | null): Promise<void> {
+  await withRetry(() => db.update(sessions).set({ name }).where(eq(sessions.id, sessionId)))
+}
+
+// messages/artifacts/attachments/usage_events 都对 sessions.id 设置了
+// onDelete: 'cascade'（见 schema.ts），删这一行会把这个会话的历史消息、
+// 产物元数据、附件元数据、用量记录一并删掉——R2 里的实际文件字节不受
+// 影响，会变成孤儿对象，跟其他地方一样交给已经配置好的 R2 生命周期
+// 规则（scripts/configure-r2-lifecycle.ts）自然过期清理，这里不用同步
+// 处理。调用方必须已经校验过归属。
+export async function deleteSession(sessionId: string): Promise<void> {
+  await withRetry(() => db.delete(sessions).where(eq(sessions.id, sessionId)))
 }
 
 // 容忍会话行尚不存在的情况（全新的 sessionId，
@@ -87,6 +152,18 @@ async function loadMessageRows(sessionId: string, ownerId: string | undefined): 
       .returning({ id: messages.id, message: messages.message }),
   )
   return [inserted]
+}
+
+// 只统计消息数、不取正文——供 GET /api/sessions/:id/messages/count 使用。
+// 调用方必须已经校验过归属（比如先调用 resolveSessionAccess）。跟
+// loadMessageRows 不同，这里不做"会话不存在就创建"的兜底——能查计数
+// 的场景下，调用方发起请求前，客户端本地必然已经有这个 sessionId，
+// 说明会话行早就存在了。
+export async function getSessionMessageCount(sessionId: string): Promise<number> {
+  const rows = await withRetry(() =>
+    db.select({ count: sql<number>`count(*)::int` }).from(messages).where(eq(messages.sessionId, sessionId)),
+  )
+  return rows[0]?.count ?? 0
 }
 
 // 完整、未压缩的对话历史 —— 供 GET /api/sessions/:id 使用，

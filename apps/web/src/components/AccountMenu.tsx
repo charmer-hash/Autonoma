@@ -76,7 +76,7 @@ export function AccountMenu({
               setOpen(false)
               onOpenSettings()
             }}
-            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-colors hover:bg-muted"
+            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm outline-none transition-colors hover:bg-muted focus-visible:bg-muted"
           >
             <Settings className="size-4 text-muted-foreground" />
             Agent 设置
@@ -88,7 +88,7 @@ export function AccountMenu({
               setOpen(false)
               onLogoutClick()
             }}
-            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-destructive transition-colors hover:bg-destructive/10"
+            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-destructive outline-none transition-colors hover:bg-destructive/10 focus-visible:bg-destructive/10"
           >
             <LogOut className="size-4" />
             退出登录
@@ -102,7 +102,7 @@ export function AccountMenu({
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
         className={cn(
-          'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-sidebar-accent/50',
+          'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left outline-none transition-colors hover:bg-sidebar-accent/50 focus-visible:bg-sidebar-accent/50',
           open && 'bg-sidebar-accent/50',
         )}
       >
