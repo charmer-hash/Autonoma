@@ -1,6 +1,13 @@
 import { create } from 'zustand'
 
-export type PanelTarget = { kind: 'tool'; id: string } | { kind: 'artifact'; id: string }
+// document 跟 tool/artifact 不一样——它不是通过 id 去 blocks 数组里实时
+// 查找的（document block 本身没有 id，内容也是创建后就不会再变的完整
+// Markdown 文本），所以这里直接把 name/content 整个塞进 target，
+// PreviewPanel 拿到手就是最终要展示的内容，不需要额外的查找步骤。
+export type PanelTarget =
+  | { kind: 'tool'; id: string }
+  | { kind: 'artifact'; id: string }
+  | { kind: 'document'; name: string; content: string }
 
 interface PanelStore {
   target: PanelTarget | null

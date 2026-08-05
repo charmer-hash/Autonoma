@@ -1,10 +1,11 @@
-import { memo, useState } from 'react'
+import { memo } from 'react'
 import { CircleAlert, Download, FileText, Maximize2 } from 'lucide-react'
 import { Button } from '@autonoma/ui/components/button'
+import { useIsMobile } from '@/hooks/useIsMobile'
 import type { Block } from '@/types/blocks'
 import { downloadText } from '@/lib/format'
+import { usePanelStore } from '@/store/panelStore'
 import { ArtifactCard } from './ArtifactCard'
-import { DocumentPreviewDialog } from './DocumentPreviewDialog'
 import { Markdown } from './Markdown'
 import { ToolCard } from './ToolCard'
 
@@ -22,7 +23,8 @@ export const BlockView = memo(function BlockView({
   block: Exclude<Block, { kind: 'user' }>
   live?: boolean
 }) {
-  const [previewOpen, setPreviewOpen] = useState(false)
+  const openPanel = usePanelStore((s) => s.open)
+  const isMobile = useIsMobile()
 
   if (block.kind === 'text') {
     if (live) {
@@ -42,37 +44,35 @@ export const BlockView = memo(function BlockView({
 
   if (block.kind === 'document') {
     return (
-      <>
-        <div className="overflow-hidden rounded-lg border bg-card">
-          <div className="flex items-center gap-2 border-b bg-muted/40 px-3 py-2">
-            <FileText className="size-4 shrink-0 text-primary" />
-            <span className="min-w-0 flex-1 truncate text-sm font-medium">{block.name}</span>
+      <div className="overflow-hidden rounded-lg border bg-card">
+        <div className="flex items-center gap-2 border-b bg-muted/40 px-3 py-2">
+          <FileText className="size-4 shrink-0 text-primary" />
+          <span className="min-w-0 flex-1 truncate text-sm font-medium">{block.name}</span>
+          {/* 移动端暂时不提供放大预览——右侧面板在移动端是全屏抽屉，
+              这个交互还没有针对小屏幕设计过，先隐藏掉，不是删掉功能。 */}
+          {!isMobile && (
             <Button
               variant="ghost"
               size="icon-sm"
-              onClick={() => setPreviewOpen(true)}
-              aria-label={`全屏预览 ${block.name}`}
+              onClick={() => openPanel({ kind: 'document', name: block.name, content: block.content })}
+              aria-label={`在右侧面板打开 ${block.name}`}
             >
               <Maximize2 className="size-4" />
             </Button>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              onClick={() => downloadText(block.name, block.content)}
-              aria-label={`下载 ${block.name}`}
-            >
-              <Download className="size-4" />
-            </Button>
-          </div>
-          <div className="max-h-96 overflow-y-auto px-4 py-3">
-            <Markdown text={block.content} />
-          </div>
+          )}
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={() => downloadText(block.name, block.content)}
+            aria-label={`下载 ${block.name}`}
+          >
+            <Download className="size-4" />
+          </Button>
         </div>
-        <DocumentPreviewDialog
-          doc={previewOpen ? { name: block.name, content: block.content } : null}
-          onClose={() => setPreviewOpen(false)}
-        />
-      </>
+        <div className="max-h-96 overflow-y-auto px-4 py-3">
+          <Markdown text={block.content} />
+        </div>
+      </div>
     )
   }
 

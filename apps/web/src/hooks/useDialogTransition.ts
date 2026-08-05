@@ -11,10 +11,12 @@ const VARIANTS = {
 } as const
 
 // 弹窗类组件共用的"进场/退场动画 + Esc 关闭 + 延迟卸载"逻辑——
-// ConfirmLogoutDialog/DocumentPreviewDialog/FilePreviewDialog/
-// AgentSettingsDialog 原先各自写了一份几乎一样的实现，抽到这里之后
-// 四处都只需要拿到 backdropRef/cardRef 接到自己的 JSX 上、以及
-// `if (!shouldRender) return null` 这一行。
+// ConfirmLogoutDialog/ConfirmDeleteSessionDialog/AgentSettingsDialog
+// 原先各自写了一份几乎一样的实现，抽到这里之后每处都只需要拿到
+// backdropRef/cardRef 接到自己的 JSX 上、以及
+// `if (!shouldRender) return null` 这一行。`large` 变体是给文档/文件的
+// 全屏预览弹窗准备的，这两个弹窗后来改成了在右侧面板里展示（见
+// components/PreviewPanel.tsx），当前没有组件在用，先留着不删。
 //
 // `render`（这里叫 shouldRender，避免跟组件自身可能用到的其他
 // render/state 变量撞名）和 `open` 是两个不同的东西：`open` 是调用方
