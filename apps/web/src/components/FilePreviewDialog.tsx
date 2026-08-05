@@ -1,7 +1,7 @@
-import { useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { gsap } from 'gsap'
+import { useMemo, useRef } from 'react'
 import { Download, File as FileIcon, X } from 'lucide-react'
 import { Button } from '@autonoma/ui/components/button'
+import { useDialogTransition } from '@/hooks/useDialogTransition'
 import { API_URL } from '@/lib/api-client'
 import { getArtifactRawUrl } from '@/lib/artifacts-api'
 import { FilePreview } from './file-preview/FilePreview'
@@ -14,45 +14,12 @@ export function FilePreviewDialog({
   onClose: () => void
 }) {
   const open = file !== null
-  const [render, setRender] = useState(open)
-  const backdropRef = useRef<HTMLDivElement>(null)
-  const cardRef = useRef<HTMLDivElement>(null)
+  const { shouldRender, backdropRef, cardRef } = useDialogTransition(open, onClose, 'large')
   // 在关闭动画播放期间持续渲染最后一个非空的 file——
   // `file` 本身在关闭时会立刻变为 null，但退场时间线
   // 需要一点时间才会真正卸载（与 DocumentPreviewDialog 的做法一致）。
   const lastFile = useRef(file)
   if (file) lastFile.current = file
-
-  useLayoutEffect(() => {
-    if (open) setRender(true)
-  }, [open])
-
-  useLayoutEffect(() => {
-    if (!render || !open) return
-    gsap.set(backdropRef.current, { opacity: 0 })
-    gsap.set(cardRef.current, { opacity: 0, y: 16, scale: 0.98 })
-    gsap.to(backdropRef.current, { opacity: 1, duration: 0.2, ease: 'power2.out' })
-    gsap.to(cardRef.current, { opacity: 1, y: 0, scale: 1, duration: 0.3, ease: 'power3.out' })
-  }, [render, open])
-
-  useLayoutEffect(() => {
-    if (open || !render) return
-    const tl = gsap.timeline({ onComplete: () => setRender(false) })
-    tl.to(cardRef.current, { opacity: 0, y: 16, scale: 0.98, duration: 0.2, ease: 'power1.in' }, 0)
-    tl.to(backdropRef.current, { opacity: 0, duration: 0.2, ease: 'power1.in' }, 0)
-    return () => {
-      tl.kill()
-    }
-  }, [open, render])
-
-  useLayoutEffect(() => {
-    if (!open) return
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [open, onClose])
 
   const current = lastFile.current
   // 仅在 artifact id 变化时才重新构建——如果每次渲染都生成新的 resolveUrl，
@@ -62,7 +29,7 @@ export function FilePreviewDialog({
     [current],
   )
 
-  if (!render || !current || !source) return null
+  if (!shouldRender || !current || !source) return null
 
   return (
     <div className="fixed inset-0 z-50 flex items-stretch justify-center p-3 sm:items-center sm:p-8">

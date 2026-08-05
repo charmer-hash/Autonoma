@@ -1,5 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { gsap } from 'gsap'
+import { useEffect, useState } from 'react'
 import { Settings, X } from 'lucide-react'
 import {
   DEFAULT_AGENT_SETTINGS,
@@ -15,15 +14,40 @@ import {
 import { Button } from '@autonoma/ui/components/button'
 import { Input } from '@autonoma/ui/components/input'
 import { Textarea } from '@autonoma/ui/components/textarea'
+import { useDialogTransition } from '@/hooks/useDialogTransition'
 import { getAgentSettings, updateAgentSettings } from '@/lib/settings-api'
 
 type LoadState = 'loading' | 'loaded' | 'error'
 type SaveState = 'idle' | 'saving' | 'saved' | 'error'
 
+// 用骨架屏占位而不是"渲染真表单、但整体 disabled"——之前那种做法在数据
+// 还没拉回来时，用户看到的是一份填着 DEFAULT_AGENT_SETTINGS 默认值、
+// 灰蒙蒙但内容看起来"正常"的表单，容易被误认成已经加载完成的真实设置。
+// 骨架条的形状大致对应下面每个字段块的高度，切换到真表单时布局不会跳动。
+function SettingsSkeleton() {
+  return (
+    <div className="animate-pulse space-y-4">
+      <div className="h-32 rounded-lg bg-muted" />
+      <div className="grid grid-cols-2 gap-4">
+        <div className="h-16 rounded-lg bg-muted" />
+        <div className="h-16 rounded-lg bg-muted" />
+      </div>
+      <div className="space-y-1.5">
+        <div className="h-3.5 w-16 rounded-full bg-muted" />
+        <div className="h-3.5 w-24 rounded-full bg-muted" />
+        <div className="h-3.5 w-20 rounded-full bg-muted" />
+      </div>
+      <div className="grid grid-cols-2 gap-4">
+        <div className="h-16 rounded-lg bg-muted" />
+        <div className="h-16 rounded-lg bg-muted" />
+      </div>
+      <div className="h-3.5 w-20 rounded-full bg-muted" />
+    </div>
+  )
+}
+
 export function AgentSettingsDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const [render, setRender] = useState(open)
-  const backdropRef = useRef<HTMLDivElement>(null)
-  const cardRef = useRef<HTMLDivElement>(null)
+  const { shouldRender, backdropRef, cardRef } = useDialogTransition(open, onClose, 'compact')
 
   const [settings, setSettings] = useState<AgentSettings>(DEFAULT_AGENT_SETTINGS)
   const value = settings.customInstructions
@@ -48,37 +72,6 @@ export function AgentSettingsDialog({ open, onClose }: { open: boolean; onClose:
   const [saveState, setSaveState] = useState<SaveState>('idle')
   const [errorMessage, setErrorMessage] = useState<string>()
   const [persistedWarning, setPersistedWarning] = useState(false)
-
-  useLayoutEffect(() => {
-    if (open) setRender(true)
-  }, [open])
-
-  useLayoutEffect(() => {
-    if (!render || !open) return
-    gsap.set(backdropRef.current, { opacity: 0 })
-    gsap.set(cardRef.current, { opacity: 0, y: 8, scale: 0.97 })
-    gsap.to(backdropRef.current, { opacity: 1, duration: 0.2, ease: 'power2.out' })
-    gsap.to(cardRef.current, { opacity: 1, y: 0, scale: 1, duration: 0.28, ease: 'power3.out' })
-  }, [render, open])
-
-  useLayoutEffect(() => {
-    if (open || !render) return
-    const tl = gsap.timeline({ onComplete: () => setRender(false) })
-    tl.to(cardRef.current, { opacity: 0, y: 8, scale: 0.97, duration: 0.18, ease: 'power1.in' }, 0)
-    tl.to(backdropRef.current, { opacity: 0, duration: 0.18, ease: 'power1.in' }, 0)
-    return () => {
-      tl.kill()
-    }
-  }, [open, render])
-
-  useEffect(() => {
-    if (!open) return
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [open, onClose])
 
   // 每次打开都重新拉取最新值——不做本地缓存/未保存改动的二次确认，
   // 保持"打开即最新、关闭不保存草稿"的简单心智模型。
@@ -127,7 +120,7 @@ export function AgentSettingsDialog({ open, onClose }: { open: boolean; onClose:
     setTimeout(() => setSaveState('idle'), 1500)
   }
 
-  if (!render) return null
+  if (!shouldRender) return null
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
@@ -154,20 +147,21 @@ export function AgentSettingsDialog({ open, onClose }: { open: boolean; onClose:
           </Button>
         </div>
 
-        <div className="space-y-1.5">
-          {loadState === 'error' ? (
-            <div className="flex items-center justify-between rounded-lg border border-dashed px-3 py-4 text-sm text-muted-foreground">
-              加载失败，请重试
-              <Button variant="outline" size="sm" onClick={retryLoad}>
-                重试
-              </Button>
-            </div>
-          ) : (
-            <>
+        {loadState === 'loading' ? (
+          <SettingsSkeleton />
+        ) : loadState === 'error' ? (
+          <div className="flex items-center justify-between rounded-lg border border-dashed px-3 py-4 text-sm text-muted-foreground">
+            加载失败，请重试
+            <Button variant="outline" size="sm" onClick={retryLoad}>
+              重试
+            </Button>
+          </div>
+        ) : (
+          <>
+            <div className="space-y-1.5">
               <Textarea
                 value={value}
                 onChange={(e) => setValue(e.target.value)}
-                disabled={loadState !== 'loaded'}
                 maxLength={MAX_CUSTOM_INSTRUCTIONS_LENGTH}
                 placeholder="例如：回复时使用简体中文；代码注释使用英文；给出方案时优先列要点而不是长段落……"
                 className="min-h-32"
@@ -175,153 +169,136 @@ export function AgentSettingsDialog({ open, onClose }: { open: boolean; onClose:
               <div className="text-right text-xs text-muted-foreground">
                 {value.length}/{MAX_CUSTOM_INSTRUCTIONS_LENGTH}
               </div>
-            </>
-          )}
-        </div>
+            </div>
 
-        {loadState !== 'error' && (
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-1.5">
-              <span className="text-xs font-medium text-muted-foreground">审批模式</span>
-              <div className="flex flex-col gap-1.5 text-sm">
-                <label className="flex items-center gap-2">
-                  <input
-                    type="radio"
-                    name="approvalMode"
-                    className="accent-primary"
-                    checked={settings.approvalMode === 'auto'}
-                    disabled={loadState !== 'loaded'}
-                    onChange={() => update('approvalMode', 'auto')}
-                  />
-                  全自动
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <span className="text-xs font-medium text-muted-foreground">审批模式</span>
+                <div className="flex flex-col gap-1.5 text-sm">
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="radio"
+                      name="approvalMode"
+                      className="accent-primary"
+                      checked={settings.approvalMode === 'auto'}
+                      onChange={() => update('approvalMode', 'auto')}
+                    />
+                    全自动
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="radio"
+                      name="approvalMode"
+                      className="accent-primary"
+                      checked={settings.approvalMode === 'confirm'}
+                      onChange={() => update('approvalMode', 'confirm')}
+                    />
+                    危险操作前确认
+                  </label>
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <label htmlFor="agent-max-turns" className="text-xs font-medium text-muted-foreground">
+                  单轮最大步数
                 </label>
-                <label className="flex items-center gap-2">
-                  <input
-                    type="radio"
-                    name="approvalMode"
-                    className="accent-primary"
-                    checked={settings.approvalMode === 'confirm'}
-                    disabled={loadState !== 'loaded'}
-                    onChange={() => update('approvalMode', 'confirm')}
-                  />
-                  危险操作前确认
-                </label>
+                <Input
+                  id="agent-max-turns"
+                  type="number"
+                  min={MIN_MAX_TURNS}
+                  max={MAX_MAX_TURNS}
+                  value={settings.maxTurns}
+                  onChange={(e) => updateNumber('maxTurns', e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  {MIN_MAX_TURNS}-{MAX_MAX_TURNS} 之间，越大越能完成复杂任务，但跑飞时消耗也越多
+                </p>
               </div>
             </div>
 
             <div className="space-y-1.5">
-              <label htmlFor="agent-max-turns" className="text-xs font-medium text-muted-foreground">
-                单轮最大步数
-              </label>
-              <Input
-                id="agent-max-turns"
-                type="number"
-                min={MIN_MAX_TURNS}
-                max={MAX_MAX_TURNS}
-                value={settings.maxTurns}
-                disabled={loadState !== 'loaded'}
-                onChange={(e) => updateNumber('maxTurns', e.target.value)}
+              <span className="text-xs font-medium text-muted-foreground">工具开关</span>
+              <div className="flex flex-col gap-1.5 text-sm">
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    className="accent-primary"
+                    checked={settings.codeExecEnabled}
+                    onChange={(e) => update('codeExecEnabled', e.target.checked)}
+                  />
+                  代码执行与文件导出
+                </label>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    className="accent-primary"
+                    checked={settings.webSearchEnabled}
+                    onChange={(e) => update('webSearchEnabled', e.target.checked)}
+                  />
+                  联网搜索
+                </label>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    className="accent-primary"
+                    checked={settings.visionEnabled}
+                    onChange={(e) => update('visionEnabled', e.target.checked)}
+                  />
+                  图片识别
+                </label>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <label htmlFor="agent-model-choice" className="text-xs font-medium text-muted-foreground">
+                  模型
+                </label>
+                <select
+                  id="agent-model-choice"
+                  value={settings.modelChoice}
+                  onChange={(e) => update('modelChoice', e.target.value as ModelChoice)}
+                  className="h-9 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-input/30"
+                >
+                  {MODEL_CHOICES.map((m) => (
+                    <option key={m.value} value={m.value}>
+                      {m.label}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  {MODEL_CHOICES.find((m) => m.value === settings.modelChoice)?.description}
+                </p>
+              </div>
+
+              <div className="space-y-1.5">
+                <label htmlFor="agent-sandbox-idle" className="text-xs font-medium text-muted-foreground">
+                  沙箱空闲保留时长（分钟）
+                </label>
+                <Input
+                  id="agent-sandbox-idle"
+                  type="number"
+                  min={MIN_SANDBOX_IDLE_MINUTES}
+                  max={MAX_SANDBOX_IDLE_MINUTES}
+                  value={settings.sandboxIdleMinutes}
+                  onChange={(e) => updateNumber('sandboxIdleMinutes', e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  {MIN_SANDBOX_IDLE_MINUTES}-{MAX_SANDBOX_IDLE_MINUTES} 之间，决定同一会话的沙箱在两条消息之间能保留多久
+                </p>
+              </div>
+            </div>
+
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                className="accent-primary"
+                checked={settings.conciseReplies}
+                onChange={(e) => update('conciseReplies', e.target.checked)}
               />
-              <p className="text-xs text-muted-foreground">
-                {MIN_MAX_TURNS}-{MAX_MAX_TURNS} 之间，越大越能完成复杂任务，但跑飞时消耗也越多
-              </p>
-            </div>
-          </div>
-        )}
-
-        {loadState !== 'error' && (
-          <div className="space-y-1.5">
-            <span className="text-xs font-medium text-muted-foreground">工具开关</span>
-            <div className="flex flex-col gap-1.5 text-sm">
-              <label className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  className="accent-primary"
-                  checked={settings.codeExecEnabled}
-                  disabled={loadState !== 'loaded'}
-                  onChange={(e) => update('codeExecEnabled', e.target.checked)}
-                />
-                代码执行与文件导出
-              </label>
-              <label className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  className="accent-primary"
-                  checked={settings.webSearchEnabled}
-                  disabled={loadState !== 'loaded'}
-                  onChange={(e) => update('webSearchEnabled', e.target.checked)}
-                />
-                联网搜索
-              </label>
-              <label className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  className="accent-primary"
-                  checked={settings.visionEnabled}
-                  disabled={loadState !== 'loaded'}
-                  onChange={(e) => update('visionEnabled', e.target.checked)}
-                />
-                图片识别
-              </label>
-            </div>
-          </div>
-        )}
-
-        {loadState !== 'error' && (
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-1.5">
-              <label htmlFor="agent-model-choice" className="text-xs font-medium text-muted-foreground">
-                模型
-              </label>
-              <select
-                id="agent-model-choice"
-                value={settings.modelChoice}
-                disabled={loadState !== 'loaded'}
-                onChange={(e) => update('modelChoice', e.target.value as ModelChoice)}
-                className="h-9 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-input/30"
-              >
-                {MODEL_CHOICES.map((m) => (
-                  <option key={m.value} value={m.value}>
-                    {m.label}
-                  </option>
-                ))}
-              </select>
-              <p className="text-xs text-muted-foreground">
-                {MODEL_CHOICES.find((m) => m.value === settings.modelChoice)?.description}
-              </p>
-            </div>
-
-            <div className="space-y-1.5">
-              <label htmlFor="agent-sandbox-idle" className="text-xs font-medium text-muted-foreground">
-                沙箱空闲保留时长（分钟）
-              </label>
-              <Input
-                id="agent-sandbox-idle"
-                type="number"
-                min={MIN_SANDBOX_IDLE_MINUTES}
-                max={MAX_SANDBOX_IDLE_MINUTES}
-                value={settings.sandboxIdleMinutes}
-                disabled={loadState !== 'loaded'}
-                onChange={(e) => updateNumber('sandboxIdleMinutes', e.target.value)}
-              />
-              <p className="text-xs text-muted-foreground">
-                {MIN_SANDBOX_IDLE_MINUTES}-{MAX_SANDBOX_IDLE_MINUTES} 之间，决定同一会话的沙箱在两条消息之间能保留多久
-              </p>
-            </div>
-          </div>
-        )}
-
-        {loadState !== 'error' && (
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              className="accent-primary"
-              checked={settings.conciseReplies}
-              disabled={loadState !== 'loaded'}
-              onChange={(e) => update('conciseReplies', e.target.checked)}
-            />
-            简洁回复
-          </label>
+              简洁回复
+            </label>
+          </>
         )}
 
         {persistedWarning && <p className="text-xs text-muted-foreground">当前处于免登录模式，这条设置不会被保存。</p>}

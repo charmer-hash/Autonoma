@@ -1,7 +1,7 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { gsap } from 'gsap'
+import { useLayoutEffect, useRef } from 'react'
 import { LogOut } from 'lucide-react'
 import { Button } from '@autonoma/ui/components/button'
+import { useDialogTransition } from '@/hooks/useDialogTransition'
 
 export function ConfirmLogoutDialog({
   open,
@@ -12,46 +12,16 @@ export function ConfirmLogoutDialog({
   onCancel: () => void
   onConfirm: () => void
 }) {
-  const [render, setRender] = useState(open)
-  const backdropRef = useRef<HTMLDivElement>(null)
-  const cardRef = useRef<HTMLDivElement>(null)
+  const { shouldRender, backdropRef, cardRef } = useDialogTransition(open, onCancel, 'compact')
   const confirmButtonRef = useRef<HTMLButtonElement>(null)
 
+  // 进场动画播完（`shouldRender` 追上 `open`）之后再把焦点给到确认按钮，
+  // 跟原来的行为一致——这一点是这个弹窗特有的，不属于共享 hook 的职责。
   useLayoutEffect(() => {
-    if (open) setRender(true)
-  }, [open])
+    if (shouldRender && open) confirmButtonRef.current?.focus()
+  }, [shouldRender, open])
 
-  // 进场：在 render 追上已经为 true 的 `open` 之后触发。
-  useLayoutEffect(() => {
-    if (!render || !open) return
-    gsap.set(backdropRef.current, { opacity: 0 })
-    gsap.set(cardRef.current, { opacity: 0, y: 8, scale: 0.97 })
-    gsap.to(backdropRef.current, { opacity: 1, duration: 0.2, ease: 'power2.out' })
-    gsap.to(cardRef.current, { opacity: 1, y: 0, scale: 1, duration: 0.28, ease: 'power3.out' })
-    confirmButtonRef.current?.focus()
-  }, [render, open])
-
-  // 退场：先播放动画，然后再真正卸载组件。
-  useLayoutEffect(() => {
-    if (open || !render) return
-    const tl = gsap.timeline({ onComplete: () => setRender(false) })
-    tl.to(cardRef.current, { opacity: 0, y: 8, scale: 0.97, duration: 0.18, ease: 'power1.in' }, 0)
-    tl.to(backdropRef.current, { opacity: 0, duration: 0.18, ease: 'power1.in' }, 0)
-    return () => {
-      tl.kill()
-    }
-  }, [open, render])
-
-  useEffect(() => {
-    if (!open) return
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') onCancel()
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [open, onCancel])
-
-  if (!render) return null
+  if (!shouldRender) return null
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center px-4">

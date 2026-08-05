@@ -1,7 +1,7 @@
-import { useLayoutEffect, useRef, useState } from 'react'
-import { gsap } from 'gsap'
+import { useRef } from 'react'
 import { Download, FileText, X } from 'lucide-react'
 import { Button } from '@autonoma/ui/components/button'
+import { useDialogTransition } from '@/hooks/useDialogTransition'
 import { downloadText } from '@/lib/format'
 import { Markdown } from './Markdown'
 
@@ -13,47 +13,14 @@ export function DocumentPreviewDialog({
   onClose: () => void
 }) {
   const open = doc !== null
-  const [render, setRender] = useState(open)
-  const backdropRef = useRef<HTMLDivElement>(null)
-  const cardRef = useRef<HTMLDivElement>(null)
+  const { shouldRender, backdropRef, cardRef } = useDialogTransition(open, onClose, 'large')
   // 在关闭动画播放期间持续渲染最后一个非空的 doc——
   // `doc` 本身在关闭时会立刻变为 null，但退场时间线
   // 需要一点时间才会真正卸载。
   const lastDoc = useRef(doc)
   if (doc) lastDoc.current = doc
 
-  useLayoutEffect(() => {
-    if (open) setRender(true)
-  }, [open])
-
-  useLayoutEffect(() => {
-    if (!render || !open) return
-    gsap.set(backdropRef.current, { opacity: 0 })
-    gsap.set(cardRef.current, { opacity: 0, y: 16, scale: 0.98 })
-    gsap.to(backdropRef.current, { opacity: 1, duration: 0.2, ease: 'power2.out' })
-    gsap.to(cardRef.current, { opacity: 1, y: 0, scale: 1, duration: 0.3, ease: 'power3.out' })
-  }, [render, open])
-
-  useLayoutEffect(() => {
-    if (open || !render) return
-    const tl = gsap.timeline({ onComplete: () => setRender(false) })
-    tl.to(cardRef.current, { opacity: 0, y: 16, scale: 0.98, duration: 0.2, ease: 'power1.in' }, 0)
-    tl.to(backdropRef.current, { opacity: 0, duration: 0.2, ease: 'power1.in' }, 0)
-    return () => {
-      tl.kill()
-    }
-  }, [open, render])
-
-  useLayoutEffect(() => {
-    if (!open) return
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [open, onClose])
-
-  if (!render || !lastDoc.current) return null
+  if (!shouldRender || !lastDoc.current) return null
   const { name, content } = lastDoc.current
 
   return (
