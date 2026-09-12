@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import { last as lastOf } from 'lodash-es'
 import type { AgentEvent, SessionSummary, UploadedAttachment } from '@autonoma/shared'
 import type { Block, SentAttachment } from '@/types/blocks'
-import { NoActiveRunError, StreamDroppedError, postApprovalDecision, reconnectAgent, runAgent } from '@/lib/agent-api'
+import { NoActiveRunError, StreamDroppedError, postApprovalDecision, reconnectAgent, runAgent, stopAgent } from '@/lib/agent-api'
 import {
   deleteSession as deleteSessionApi,
   getSessionMessageCount,
@@ -74,6 +74,7 @@ interface ConsoleStore {
   handleNewSession: () => void
   loadSession: (id: string) => Promise<void>
   run: (attachments?: SentAttachment[]) => Promise<void>
+  stop: () => Promise<void>
   // 审批模式下点击工具卡片的批准/拒绝按钮时调用（见 ToolCard.tsx）——
   // 真正的状态变化仍由后续从同一条 SSE 连接推来的 tool_call/tool_result
   // 事件驱动，这里只负责把决定发给服务端。返回值供调用方判断请求是否
@@ -192,6 +193,13 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => {
     set((s) => ({ blocks: [...s.blocks, { kind: 'error', text }] }))
   }
 
+  function markCancelled() {
+    set((s) => ({
+      blocks: [...s.blocks, { kind: 'text', text: '已停止当前执行。' }],
+    }))
+    set((s) => ({ blocks: s.blocks.map((b) => b.kind === 'tool' && (b.status === 'running' || b.status === 'awaiting_approval') ? { ...b, status: 'cancelled' } : b) }))
+  }
+
   function appendDocument(name: string, content: string) {
     set((s) => ({ blocks: [...s.blocks, { kind: 'document', name, content }] }))
   }
@@ -236,6 +244,9 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => {
         break
       case 'error':
         appendError(event.message)
+        break
+      case 'stopped':
+        markCancelled()
         break
       case 'done':
         break
@@ -540,6 +551,12 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => {
           get().refreshSessions({ preserveLoadedCount: true })
         }
       }
+    },
+
+    stop: async () => {
+      const sessionId = get().sessionId
+      if (!sessionId || !get().running) return
+      try { await stopAgent(sessionId) } catch (err) { appendError(err instanceof Error ? err.message : String(err)) }
     },
 
     respondToApproval: async (toolCallId, approved) => {

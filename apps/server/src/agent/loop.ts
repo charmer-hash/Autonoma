@@ -76,6 +76,8 @@ export async function* runAgentLoop(
   initialVisionImages: PendingVisionImage[] = [],
   settings: AgentSettings = DEFAULT_AGENT_SETTINGS,
   ownerId: string | undefined = undefined,
+  isCancelled: () => boolean = () => false,
+  signal?: AbortSignal,
 ): AsyncGenerator<AgentEvent> {
   // 排队等待展示给模型的图片，*仅*用于下一次 LLM 调用
   // （参见 tools/vision.ts 的 buildVisionMessage）——这里先用本轮
@@ -122,6 +124,7 @@ export async function* runAgentLoop(
 
   try {
     for (let turn = 0; turn < settings.maxTurns; turn++) {
+      if (isCancelled()) return
       let content = ''
       const toolCalls: OpenAI.Chat.ChatCompletionMessageFunctionToolCall[] = []
       let finishReason: string | null = null
@@ -157,9 +160,10 @@ export async function* runAgentLoop(
             tools,
             stream: true,
             stream_options: { include_usage: true },
-          })
+          }, { signal })
 
           for await (const chunk of chunkStream) {
+            if (isCancelled()) return
             const delta = chunk.choices[0]?.delta
             if (chunk.choices[0]?.finish_reason) {
               finishReason = chunk.choices[0].finish_reason
@@ -250,6 +254,7 @@ export async function* runAgentLoop(
         const PARALLELIZABLE_TOOLS = new Set(['web_search'])
         const runs: OpenAI.Chat.ChatCompletionMessageFunctionToolCall[][] = []
         for (const toolCall of toolCalls) {
+          if (isCancelled()) return
           const last = runs[runs.length - 1]
           if (
             last &&
@@ -277,7 +282,8 @@ export async function* runAgentLoop(
               args = toolCall.function.arguments
             }
             yield { type: 'approval_required', id: toolCall.id, name: toolCall.function.name, args }
-            const approved = await waitForApproval(`${sessionId}:${toolCall.id}`)
+            const approved = await waitForApproval(`${sessionId}:${toolCall.id}`, 5 * 60_000, signal)
+            if (isCancelled()) return
             if (!approved) {
               const result = JSON.stringify({ ok: false, error: '用户拒绝执行该操作，请调整方案或询问用户下一步怎么做。' })
               yield { type: 'tool_result', id: toolCall.id, name: toolCall.function.name, result }

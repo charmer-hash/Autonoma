@@ -37,10 +37,13 @@ import { resolveApproval } from './agent/approvals.js'
 import {
   attachSink,
   clearSessionDeleting,
+  cancelRun,
   detachSink,
   finishRun,
   isRunActive,
   isRunInProgress,
+  isRunCancelled,
+  getRunSignal,
   markSessionDeleting,
   publish,
   tryStartRun,
@@ -600,6 +603,16 @@ app.post('/api/agent/approve', requireAuth, async (c) => {
   return c.json({ ok: true })
 })
 
+app.post('/api/agent/stop', requireAuth, async (c) => {
+  const body = await c.req.json<{ sessionId?: string }>().catch(() => ({}) as { sessionId?: string })
+  if (!body.sessionId) return c.json({ error: '缺少 sessionId。' }, 400)
+  const ownerId = await getOwnerId(c)
+  const access = await resolveSessionAccess(body.sessionId, ownerId)
+  if (access === 'forbidden') return c.json({ error: '无权访问该会话。' }, 403)
+  if (access === 'not_found') return c.json({ error: '会话不存在。' }, 404)
+  return c.json({ ok: cancelRun(body.sessionId) })
+})
+
 app.post('/api/agent/run', requireAuth, async (c) => {
   const body = await c.req
     .json<{ task?: string; sessionId?: string; attachments?: UploadedAttachment[] }>()
@@ -729,7 +742,7 @@ app.post('/api/agent/run', requireAuth, async (c) => {
         messages.push({ role: 'user', content: task + attachmentNote })
 
         try {
-          for await (const event of runAgentLoop(messages, sandbox, sessionId, visionImages, settings, ownerId)) {
+          for await (const event of runAgentLoop(messages, sandbox, sessionId, visionImages, settings, ownerId, () => isRunCancelled(sessionId), getRunSignal(sessionId, runId))) {
             publish(sessionId, event)
           }
         } finally {

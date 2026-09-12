@@ -12,6 +12,7 @@ export type AgentEvent =
   | { type: 'document'; name: string; content: string }
   | { type: 'artifact'; id: string; name: string; mimeType: string; size: number }
   | { type: 'error'; message: string }
+  | { type: 'stopped' }
   | { type: 'done' }
 
 // 持久化会话消息（GET /api/sessions/:id）的线上传输结构 ——

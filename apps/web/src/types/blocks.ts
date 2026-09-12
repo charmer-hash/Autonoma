@@ -19,7 +19,7 @@ export type Block =
   // 'awaiting_approval'：审批模式下工具真正执行前推给用户确认的状态，
   // 见 ToolCard.tsx——点批准后由服务端推来的 tool_call 事件转成 'running'，
   // 点拒绝/超时后服务端直接推 tool_result，转成 'done'。
-  | { kind: 'tool'; id: string; name: string; args: unknown; result?: string; status: 'running' | 'done' | 'awaiting_approval' }
+  | { kind: 'tool'; id: string; name: string; args: unknown; result?: string; status: 'running' | 'done' | 'awaiting_approval' | 'cancelled' }
   | { kind: 'document'; name: string; content: string }
   | { kind: 'artifact'; id: string; name: string; mimeType: string; size: number }
   | { kind: 'error'; text: string }

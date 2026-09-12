@@ -8,17 +8,23 @@ const pending = new Map<string, (approved: boolean) => void>()
 // key 建议用 `${sessionId}:${toolCallId}`，避免不同会话里偶然撞上相同的
 // tool_call id。超时未处理时按"拒绝"处理，而不是让等待永远挂着——否则
 // 对应的 SSE 连接和沙箱会跟着无限期占用。
-export function waitForApproval(key: string, timeoutMs = 5 * 60_000): Promise<boolean> {
+export function waitForApproval(key: string, timeoutMs = 5 * 60_000, signal?: AbortSignal): Promise<boolean> {
   return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      pending.delete(key)
-      resolve(false)
-    }, timeoutMs)
-    pending.set(key, (approved) => {
+    const finish = (approved: boolean) => {
       clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
       pending.delete(key)
       resolve(approved)
-    })
+    }
+    const onAbort = () => finish(false)
+    const timer = setTimeout(() => {
+      pending.delete(key)
+      signal?.removeEventListener('abort', onAbort)
+      resolve(false)
+    }, timeoutMs)
+    pending.set(key, finish)
+    if (signal?.aborted) onAbort()
+    else signal?.addEventListener('abort', onAbort, { once: true })
   })
 }
 

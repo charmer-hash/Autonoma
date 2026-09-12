@@ -29,6 +29,8 @@ type ActiveRun = {
   sinks: Set<Sink>
   finished: boolean
   finishWaiters: Set<() => void>
+  cancelled: boolean
+  controller: AbortController
 }
 
 const runs = new Map<string, ActiveRun>()
@@ -57,8 +59,26 @@ export function tryStartRun(sessionId: string): string | undefined {
   const existing = runs.get(sessionId)
   if (existing && !existing.finished) return undefined
   const id = crypto.randomUUID()
-  runs.set(sessionId, { id, events: [], nextSeq: 0, sinks: new Set(), finished: false, finishWaiters: new Set() })
+  runs.set(sessionId, { id, events: [], nextSeq: 0, sinks: new Set(), finished: false, finishWaiters: new Set(), cancelled: false, controller: new AbortController() })
   return id
+}
+
+export function cancelRun(sessionId: string): boolean {
+  const run = runs.get(sessionId)
+  if (!run || run.finished) return false
+  run.cancelled = true
+  run.controller.abort()
+  publish(sessionId, { type: 'stopped' })
+  return true
+}
+
+export function getRunSignal(sessionId: string, runId: string): AbortSignal | undefined {
+  const run = runs.get(sessionId)
+  return run?.id === runId ? run.controller.signal : undefined
+}
+
+export function isRunCancelled(sessionId: string): boolean {
+  return runs.get(sessionId)?.cancelled ?? false
 }
 
 // 调用方（DELETE /api/sessions/:id）必须先同步调用 isRunInProgress 确认

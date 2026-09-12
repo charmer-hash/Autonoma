@@ -133,6 +133,11 @@ export async function postApprovalDecision(sessionId: string, toolCallId: string
   if (!res.ok) throw new Error(await readErrorMessage(res, '提交决定失败，请重试'))
 }
 
+export async function stopAgent(sessionId: string): Promise<void> {
+  const res = await apiFetch('/api/agent/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId }) })
+  if (!res.ok) throw new Error(await readErrorMessage(res, '停止失败，请重试'))
+}
+
 export async function* runAgent(
   task: string,
   sessionId: string | undefined,

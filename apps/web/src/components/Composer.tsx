@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { gsap } from 'gsap'
-import { ArrowUp, CircleAlert, Loader2, Paperclip, X } from 'lucide-react'
+import { ArrowUp, CircleAlert, Paperclip, Square, X } from 'lucide-react'
 import { Button } from '@autonoma/ui/components/button'
 import { Textarea } from '@autonoma/ui/components/textarea'
 import { createR2AutoUploadAdapter } from '@autonoma/upload/lib/auto'
@@ -52,6 +52,7 @@ export function Composer() {
   const setTask = useConsoleStore((s) => s.setTask)
   const running = useConsoleStore((s) => s.running)
   const run = useConsoleStore((s) => s.run)
+  const stop = useConsoleStore((s) => s.stop)
   const sendButtonRef = useRef<HTMLButtonElement>(null)
   const cardRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -171,12 +172,12 @@ export function Composer() {
           <Button
             ref={sendButtonRef}
             size="icon-sm"
-            onClick={handleRunClick}
-            disabled={running || uploading || !task.trim()}
-            aria-label="发送"
+            disabled={uploading || (!running && !task.trim())}
+            onClick={running ? () => void stop() : handleRunClick}
+            aria-label={running ? '停止' : '发送'}
             className="bg-gradient-to-br from-primary to-chart-2 shadow-[0_6px_20px_-8px_color-mix(in_oklch,var(--primary)_55%,transparent)] transition-shadow hover:opacity-90 hover:shadow-[0_8px_24px_-6px_color-mix(in_oklch,var(--primary)_65%,transparent)]"
           >
-            {running ? <Loader2 className="size-4 animate-spin" /> : <ArrowUp className="size-4" />}
+            {running ? <Square className="size-3.5 fill-current" /> : <ArrowUp className="size-4" />}
           </Button>
         </div>
       </div>
