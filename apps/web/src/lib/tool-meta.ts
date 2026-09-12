@@ -14,12 +14,14 @@ export const TOOL_META: Record<string, { icon: typeof Terminal; label: string }>
   run_command: { icon: Terminal, label: '命令' },
   write_file: { icon: FileCode, label: '文件' },
   web_search: { icon: Search, label: '搜索' },
+  web_fetch: { icon: Search, label: '网页' },
 }
 
 export function toolSummary(name: string, args: unknown): string {
   if (name === 'run_command') return String(get(args, 'command', ''))
   if (name === 'write_file') return String(get(args, 'path', ''))
   if (name === 'web_search') return String(get(args, 'query', ''))
+  if (name === 'web_fetch') return String(get(args, 'url', ''))
   return name
 }
 

@@ -55,7 +55,7 @@ export function createInitialMessages(): OpenAI.Chat.ChatCompletionMessageParam[
 // 同时也避免模型尝试调用一个已被关闭、根本没注册的工具。
 function buildToolsNote(settings: AgentSettings): OpenAI.Chat.ChatCompletionMessageParam | undefined {
   const disabled: string[] = []
-  if (!settings.webSearchEnabled) disabled.push('web_search（联网搜索）')
+  if (!settings.webSearchEnabled) disabled.push('web_search / web_fetch（联网搜索与网页读取）')
   if (!settings.codeExecEnabled) disabled.push('run_command / write_file / export_artifact（代码执行与文件导出）')
   if (!settings.visionEnabled) disabled.push('view_image（图片识别）')
   if (disabled.length === 0) return undefined
