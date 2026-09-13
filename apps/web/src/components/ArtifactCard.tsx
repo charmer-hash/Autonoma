@@ -37,6 +37,7 @@ export function ArtifactCard({ block }: { block: Extract<Block, { kind: 'artifac
             variant="ghost"
             size="icon-sm"
             aria-label={`下载 ${block.name}`}
+            nativeButton={false}
             render={<a href={url} />}
           >
             <Download className="size-4" />
@@ -60,7 +61,7 @@ export function ArtifactCard({ block }: { block: Extract<Block, { kind: 'artifac
           <Maximize2 className="size-4" />
         </Button>
       )}
-      <Button variant="ghost" size="icon-sm" aria-label={`下载 ${block.name}`} render={<a href={url} />}>
+      <Button variant="ghost" size="icon-sm" aria-label={`下载 ${block.name}`} nativeButton={false} render={<a href={url} download={block.name} />}>
         <Download className="size-4" />
       </Button>
     </div>

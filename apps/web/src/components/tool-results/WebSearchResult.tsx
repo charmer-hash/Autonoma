@@ -49,14 +49,6 @@ export function WebSearchResult({ block }: ToolResultProps) {
         >
           <span className="relative mt-0.5 flex size-4 shrink-0 items-center justify-center overflow-hidden rounded-sm bg-muted-foreground/10">
             <Globe className="absolute size-3 text-muted-foreground" />
-            <img
-              src={`https://www.google.com/s2/favicons?sz=64&domain=${hostname(r.url)}`}
-              alt=""
-              className="relative size-4"
-              onError={(e) => {
-                e.currentTarget.style.display = 'none'
-              }}
-            />
           </span>
           <div className="min-w-0 flex-1 space-y-0.5">
             <div className="truncate text-[11px] text-muted-foreground">{hostname(r.url)}</div>
