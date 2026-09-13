@@ -614,6 +614,7 @@ app.post('/api/agent/stop', requireAuth, async (c) => {
 })
 
 app.post('/api/agent/run', requireAuth, async (c) => {
+  const requestStartedAt = Date.now()
   const body = await c.req
     .json<{ task?: string; sessionId?: string; attachments?: UploadedAttachment[] }>()
     .catch(() => ({}) as { task?: string; sessionId?: string; attachments?: UploadedAttachment[] })
@@ -663,15 +664,19 @@ app.post('/api/agent/run', requireAuth, async (c) => {
 
   // 提前一次性加载好，供下面的沙箱创建/超时设置和 runAgentLoop 共用——
   // 读取失败（数据库瞬时抖动）不应该让整个任务跑不起来，静默回退到默认设置。
-  const settings: AgentSettings = ownerId
-    ? await getAgentSettings(ownerId).catch((err) => {
+  const [settings, existingSandboxId] = await Promise.all([
+    ownerId
+      ? getAgentSettings(ownerId).catch((err) => {
         console.error('failed to load agent settings:', err)
         return DEFAULT_AGENT_SETTINGS
       })
-    : DEFAULT_AGENT_SETTINGS
+      : Promise.resolve(DEFAULT_AGENT_SETTINGS),
+    getSandboxId(sessionId).catch(() => null),
+  ])
   const sandboxIdleTtlMs = settings.sandboxIdleMinutes * 60_000
 
   return streamSSE(c, async (stream) => {
+    const runStartedAt = requestStartedAt
     // 本连接自己就是这次运行的第一个订阅者——所有事件都经 publish() 走
     // active-runs 的缓冲区再分发到这里，而不是直接 stream.writeSSE，这样
     // 断线重连的客户端才能通过同一份缓冲区补上错过的内容（见
@@ -709,7 +714,6 @@ app.post('/api/agent/run', requireAuth, async (c) => {
       // 原因。只要重连因为任何原因失败（过期、被回收、或从未存在过），
       // 就回退到创建一个全新的沙箱。
       let sandbox: Sandbox | undefined
-      const existingSandboxId = await getSandboxId(sessionId).catch(() => null)
       if (existingSandboxId) {
         try {
           sandbox = await Sandbox.connect(existingSandboxId)
@@ -728,6 +732,7 @@ app.post('/api/agent/run', requireAuth, async (c) => {
           return
         }
       }
+      console.info('[perf] agent.sandbox_ready', { sessionId, durationMs: Date.now() - runStartedAt, reused: Boolean(existingSandboxId && sandbox) })
 
       try {
         const messages = await loadSessionMessagesForAgent(sessionId, ownerId)
@@ -742,9 +747,16 @@ app.post('/api/agent/run', requireAuth, async (c) => {
         messages.push({ role: 'user', content: task + attachmentNote })
 
         try {
+          const modelStartedAt = Date.now()
+          let firstEvent = true
           for await (const event of runAgentLoop(messages, sandbox, sessionId, visionImages, settings, ownerId, () => isRunCancelled(sessionId), getRunSignal(sessionId, runId))) {
+            if (firstEvent) {
+              console.info('[perf] agent.first_event', { sessionId, durationMs: Date.now() - modelStartedAt })
+              firstEvent = false
+            }
             publish(sessionId, event)
           }
+          console.info('[perf] agent.loop_complete', { sessionId, modelDurationMs: Date.now() - modelStartedAt, totalMs: Date.now() - runStartedAt })
         } finally {
           // 即使出错也要把这一轮产生的内容持久化下来——runAgentLoop
           // 会就地修改 `messages`，所以就算这一轮没跑完，里面也已经有

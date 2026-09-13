@@ -1,6 +1,18 @@
 import type OpenAI from 'openai'
 import { withRetry } from '../../lib/retry.js'
 
+const TAVILY_TIMEOUT_MS = 15_000
+
+async function tavilyFetch(input: string, init: RequestInit): Promise<Response> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), TAVILY_TIMEOUT_MS)
+  try {
+    return await fetch(input, { ...init, signal: controller.signal })
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 interface TavilyResult {
   title: string
   url: string
@@ -48,9 +60,11 @@ export const searchToolHandlers: Record<string, (args: unknown) => Promise<strin
     const query = String((args as { query?: unknown })?.query ?? '')
 
     let res: Response
+    const requestStartedAt = Date.now()
     try {
       res = await withRetry(async () => {
-        const r = await fetch('https://api.tavily.com/search', {
+        const startedAt = Date.now()
+        const r = await tavilyFetch('https://api.tavily.com/search', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ api_key: apiKey, query, max_results: 5 }),
@@ -58,9 +72,11 @@ export const searchToolHandlers: Record<string, (args: unknown) => Promise<strin
         // 只对服务端/临时性故障重试；4xx（key 错误、请求错误）
         // 重试也不会自愈，所以直接立即报出来，而不是干等着重试。
         if (!r.ok && r.status >= 500) throw new Error(`search upstream ${r.status}`)
+        console.info('[perf] tavily.search', { durationMs: Date.now() - startedAt, status: r.status })
         return r
       })
     } catch {
+      console.info('[perf] tavily.search_failed', { durationMs: Date.now() - requestStartedAt })
       return JSON.stringify({ error: '搜索服务暂时不可用，请稍后重试。' })
     }
 
@@ -82,16 +98,20 @@ export const searchToolHandlers: Record<string, (args: unknown) => Promise<strin
     const url = String((args as { url?: unknown })?.url ?? '').trim()
     if (!/^https?:\/\//i.test(url)) return JSON.stringify({ error: 'URL 必须以 http:// 或 https:// 开头。' })
     let res: Response
+    const requestStartedAt = Date.now()
     try {
       res = await withRetry(async () => {
-        const r = await fetch('https://api.tavily.com/extract', {
+        const startedAt = Date.now()
+        const r = await tavilyFetch('https://api.tavily.com/extract', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ api_key: apiKey, urls: [url], format: 'markdown' }),
         })
         if (!r.ok && r.status >= 500) throw new Error(`extract upstream ${r.status}`)
+        console.info('[perf] tavily.extract', { durationMs: Date.now() - startedAt, status: r.status })
         return r
       })
     } catch {
+      console.info('[perf] tavily.extract_failed', { durationMs: Date.now() - requestStartedAt })
       return JSON.stringify({ error: '网页抓取服务暂时不可用，请稍后重试。' })
     }
     if (!res.ok) return JSON.stringify({ error: `网页抓取失败：${res.status} ${res.statusText}` })
