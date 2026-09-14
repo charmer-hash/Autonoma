@@ -1,7 +1,7 @@
 import { and, eq, gt, sql } from 'drizzle-orm'
 import type OpenAI from 'openai'
 import { createInitialMessages } from '../agent/loop.js'
-import { planFold, summarizeFold, type MessageRow } from '../agent/compaction.js'
+import { planFold, summarizeFoldInBatches, type MessageRow } from '../agent/compaction.js'
 import { withRetry } from '../lib/retry.js'
 import { db } from './client.js'
 import { messages, sessions } from './schema.js'
@@ -251,7 +251,7 @@ export async function loadSessionMessagesForAgent(
     const startedAt = Date.now()
     let ok = false
     try {
-      summary = await summarizeFold(
+      summary = await summarizeFoldInBatches(
         summary,
         plan.toFold.map((r) => r.message),
       )
