@@ -1,5 +1,5 @@
 import type OpenAI from 'openai'
-import type { Sandbox } from 'e2b'
+import type { GetSandbox } from '../lazy-sandbox.js'
 import { insertArtifact } from '../../db/artifacts.js'
 import { uploadArtifact } from '../../lib/storage.js'
 import { guessMimeType } from '../../lib/mime.js'
@@ -14,7 +14,7 @@ const MAX_ARTIFACT_BYTES = 20 * 1024 * 1024 // 20MB
 // 只有一小段元数据 JSON 会（参见 loop.ts 里对 isArtifact 的处理），
 // 这样一张几 MB 的图片就不会在后续每一轮都被重新传给模型。
 export function createArtifactTools(
-  sandbox: Sandbox,
+  getSandbox: GetSandbox,
   sessionId: string,
 ): {
   tools: OpenAI.Chat.ChatCompletionTool[]
@@ -46,6 +46,7 @@ export function createArtifactTools(
 
   const toolHandlers: Record<string, (args: unknown) => Promise<string>> = {
     export_artifact: async (args) => {
+      const sandbox = await getSandbox()
       const { path, name } = args as { path?: unknown; name?: unknown }
       const sandboxPath = String(path ?? '')
       const displayName = typeof name === 'string' && name ? name : (sandboxPath.split('/').pop() ?? sandboxPath)
@@ -59,7 +60,7 @@ export function createArtifactTools(
         // 把这一点写清楚，让模型能自我纠正（重新执行生成代码后再重试），
         // 而不是只给用户报一个令人困惑的"文件不存在"。
         const hint = /does not exist|no such file/i.test(message)
-          ? '（沙箱是每次对话请求新建的，之前轮次生成的文件不会保留到这一轮——如果这个路径是更早的消息里生成的，需要用 run_command/write_file 重新生成一次，再调用 export_artifact。）'
+          ? '（沙箱可能已经过期，之前轮次生成的文件可能不再存在——如果这个路径是更早的消息里生成的，需要用 run_command/write_file 重新生成一次，再调用 export_artifact。）'
           : ''
         return JSON.stringify({ ok: false, error: `读取文件失败：${message}${hint}` })
       }

@@ -1,5 +1,6 @@
 import type OpenAI from 'openai'
-import { FileNotFoundError, type Sandbox } from 'e2b'
+import { FileNotFoundError } from 'e2b'
+import type { GetSandbox } from '../lazy-sandbox.js'
 import { getLatestAttachmentByFilename } from '../../db/attachments.js'
 import { guessMimeType } from '../../lib/mime.js'
 import { getObjectBytes, getObjectSize } from '../../lib/storage.js'
@@ -31,7 +32,7 @@ export function buildVisionMessage(images: PendingVisionImage[]): OpenAI.Chat.Ch
 // (persisted to `messages`) stays a small text acknowledgement, never the
 // image bytes themselves.
 export function createVisionTools(
-  sandbox: Sandbox,
+  getSandbox: GetSandbox,
   sessionId: string,
   pendingVisionImages: PendingVisionImage[],
 ): {
@@ -77,6 +78,7 @@ export function createVisionTools(
           error: `图片太大（${(bytes / 1024 / 1024).toFixed(1)}MB），超过 ${MAX_VISION_IMAGE_BYTES / 1024 / 1024}MB 上限，请先压缩再查看。`,
         })
 
+      const sandbox = await getSandbox()
       let bytes: Uint8Array
       try {
         const info = await sandbox.files.getInfo(filePath, { requestTimeoutMs: 60_000 })

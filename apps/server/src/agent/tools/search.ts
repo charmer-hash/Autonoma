@@ -59,7 +59,6 @@ export const searchToolHandlers: Record<string, (args: unknown) => Promise<strin
 
     const query = String((args as { query?: unknown })?.query ?? '')
     const requestId = crypto.randomUUID()
-    console.info('[tavily] search_start', { requestId, query: query.slice(0, 200) })
 
     let res: Response
     const requestStartedAt = Date.now()
@@ -90,7 +89,6 @@ export const searchToolHandlers: Record<string, (args: unknown) => Promise<strin
       console.error('[tavily] search_http_error', { requestId, status: res.status, statusText: res.statusText })
       return JSON.stringify({ error: `搜索失败：${res.status} ${res.statusText}` })
     }
-    console.info('[tavily] search_complete', { requestId, durationMs: Date.now() - requestStartedAt })
 
     const data = (await res.json()) as { results?: TavilyResult[] }
     const results = (data.results ?? []).map((r) => ({
@@ -106,7 +104,6 @@ export const searchToolHandlers: Record<string, (args: unknown) => Promise<strin
     const url = String((args as { url?: unknown })?.url ?? '').trim()
     if (!/^https?:\/\//i.test(url)) return JSON.stringify({ error: 'URL 必须以 http:// 或 https:// 开头。' })
     const requestId = crypto.randomUUID()
-    console.info('[tavily] extract_start', { requestId, url: url.slice(0, 500) })
     let res: Response
     const requestStartedAt = Date.now()
     try {
@@ -132,7 +129,6 @@ export const searchToolHandlers: Record<string, (args: unknown) => Promise<strin
       console.error('[tavily] extract_http_error', { requestId, status: res.status, statusText: res.statusText })
       return JSON.stringify({ error: `网页抓取失败：${res.status} ${res.statusText}` })
     }
-    console.info('[tavily] extract_complete', { requestId, durationMs: Date.now() - requestStartedAt })
     const data = (await res.json()) as { results?: Array<{ url?: string; raw_content?: string }> }
     const item = data.results?.[0]
     if (!item?.raw_content) return JSON.stringify({ error: '网页没有返回可读取的正文内容。', url })

@@ -1,5 +1,5 @@
 import type OpenAI from 'openai'
-import type { Sandbox } from 'e2b'
+import type { GetSandbox } from './lazy-sandbox.js'
 import { createTools } from './tools/index.js'
 import { client, VISION_MODEL, resolveModel } from './client.js'
 import { waitForApproval } from './approvals.js'
@@ -76,13 +76,14 @@ function buildToolsNote(settings: AgentSettings): OpenAI.Chat.ChatCompletionMess
 // 持久化会话，直接传 createInitialMessages() 加一条消息即可。
 export async function* runAgentLoop(
   messages: OpenAI.Chat.ChatCompletionMessageParam[],
-  sandbox: Sandbox,
+  getSandbox: GetSandbox,
   sessionId: string,
   initialVisionImages: PendingVisionImage[] = [],
   settings: AgentSettings = DEFAULT_AGENT_SETTINGS,
   ownerId: string | undefined = undefined,
   isCancelled: () => boolean = () => false,
   signal?: AbortSignal,
+  runId?: string,
 ): AsyncGenerator<AgentEvent> {
   // 排队等待展示给模型的图片，*仅*用于下一次 LLM 调用
   // （参见 tools/vision.ts 的 buildVisionMessage）——这里先用本轮
@@ -92,7 +93,7 @@ export async function* runAgentLoop(
   // 直接不填充——上传的图片依然会写入沙箱（见 index.ts），只是不会
   // 展示给模型看。
   const pendingVisionImages: PendingVisionImage[] = settings.visionEnabled ? [...initialVisionImages] : []
-  const { tools, toolHandlers } = createTools(sandbox, sessionId, pendingVisionImages, {
+  const { tools, toolHandlers } = createTools(getSandbox, sessionId, pendingVisionImages, {
     codeExecEnabled: settings.codeExecEnabled,
     webSearchEnabled: settings.webSearchEnabled,
     visionEnabled: settings.visionEnabled,
@@ -151,6 +152,9 @@ export async function* runAgentLoop(
 
       for (let attempt = 0; ; attempt++) {
         let yieldedAnything = false
+        const requestStartedAt = Date.now()
+        const context = { sessionId, runId, turn, attempt, model: modelForThisCall }
+        console.info('[perf] agent.model_request', { ...context, messageCount: messages.length + visionMessages.length + 1 + Number(Boolean(toolsNote)) + Number(Boolean(preferenceNote)) })
         try {
           const chunkStream = await client.chat.completions.create({
             model: modelForThisCall,
@@ -200,8 +204,13 @@ export async function* runAgentLoop(
               }
             }
           }
+          console.info('[perf] agent.model_complete', {
+            ...context, durationMs: Date.now() - requestStartedAt, finishReason,
+            promptTokens: usage?.prompt_tokens, completionTokens: usage?.completion_tokens,
+          })
           break
         } catch (err) {
+          console.info('[perf] agent.model_failed', { ...context, durationMs: Date.now() - requestStartedAt })
           if (!yieldedAnything && attempt < MAX_STREAM_RETRIES && isTransientStreamError(err)) {
             // 这次失败的尝试的用量/费用永远拿不到了——OpenRouter 只在流
             // 正常结束的收尾 chunk 里带 usage/cost，连接在那之前就断开的话，
@@ -323,11 +332,17 @@ export async function* runAgentLoop(
 
           const results = await Promise.all(
             prepared.map(async ({ toolCall, args }) => {
+              const startedAt = Date.now()
               try {
                 const handler = toolHandlers[toolCall.function.name]
                 return handler ? await handler(args) : `Unknown tool: ${toolCall.function.name}`
               } catch (err) {
                 return `Tool execution failed: ${err instanceof Error ? err.message : String(err)}`
+              } finally {
+                console.info('[perf] agent.tool_complete', {
+                  sessionId, runId, turn, toolCallId: toolCall.id, name: toolCall.function.name,
+                  durationMs: Date.now() - startedAt,
+                })
               }
             }),
           )

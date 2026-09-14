@@ -154,6 +154,26 @@ async function loadMessageRows(sessionId: string, ownerId: string | undefined): 
   return [inserted]
 }
 
+// 仅用于服务端刚生成 ID 的新会话。单条语句原子写入会话和系统消息，
+// 重试已成功的写入时不会重复插入系统消息。
+export async function initializeSessionForAgent(
+  sessionId: string,
+  ownerId: string | undefined,
+): Promise<OpenAI.Chat.ChatCompletionMessageParam[]> {
+  const initial = createInitialMessages()
+  await withRetry(() => db.execute(sql`
+    with created as (
+      insert into sessions (id, owner_id)
+      values (${sessionId}, ${ownerId ?? null})
+      on conflict (id) do nothing
+      returning id
+    )
+    insert into messages (session_id, message)
+    select id, ${JSON.stringify(initial[0])}::jsonb from created
+  `))
+  return initial
+}
+
 // 只统计消息数、不取正文——供 GET /api/sessions/:id/messages/count 使用。
 // 调用方必须已经校验过归属（比如先调用 resolveSessionAccess）。跟
 // loadMessageRows 不同，这里不做"会话不存在就创建"的兜底——能查计数
@@ -186,6 +206,7 @@ export async function loadSessionMessages(
 export async function loadSessionMessagesForAgent(
   sessionId: string,
   ownerId: string | undefined,
+  canCompact: () => Promise<boolean> = async () => true,
 ): Promise<OpenAI.Chat.ChatCompletionMessageParam[]> {
   // 与 loadMessageRows 不同，这里不读取会话的全部历史行 —— 只读取
   // 系统消息（result[0]）和折叠点之后的尾部（下面按 cutoff 过滤）。
@@ -226,7 +247,9 @@ export async function loadSessionMessagesForAgent(
   let summary = sessionRow?.summary ?? null
 
   const plan = planFold(tailRows)
-  if (plan) {
+  if (plan && await canCompact()) {
+    const startedAt = Date.now()
+    let ok = false
     try {
       summary = await summarizeFold(
         summary,
@@ -239,11 +262,16 @@ export async function loadSessionMessagesForAgent(
           .where(eq(sessions.id, sessionId)),
       )
       tailRows = plan.keep
+      ok = true
     } catch (err) {
       // 尽力而为：压缩失败不能导致这一轮对话中断。
       // 这次退回到发送完整的未折叠尾部；
       // 我们会在之后的调用中重试折叠。
       console.error('history compaction failed, sending full tail:', err)
+    } finally {
+      console.info('[perf] agent.history_compaction', {
+        sessionId, durationMs: Date.now() - startedAt, ok, foldedMessages: plan.toFold.length,
+      })
     }
   }
 

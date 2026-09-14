@@ -24,12 +24,15 @@ import {
   waitForFinish,
 } from './agent/active-runs.js'
 import { runAgentLoop } from './agent/loop.js'
+import { createLazySandbox } from './agent/lazy-sandbox.js'
 import { MAX_VISION_IMAGE_BYTES, type PendingVisionImage } from './agent/tools/vision.js'
 import { getOwnerId, requireAuth } from './auth.js'
 import { getLatestAttachmentByFilename, insertAttachment } from './db/attachments.js'
 import { getDailyCostUsd } from './db/usage.js'
 import {
   appendMessages,
+  initializeSessionForAgent,
+  deleteSession,
   getSandboxId,
   loadSessionMessagesForAgent,
   resolveSessionAccess,
@@ -204,6 +207,18 @@ app.post('/api/agent/stop', requireAuth, async (c) => {
 
 app.post('/api/agent/run', requireAuth, async (c) => {
   const requestStartedAt = Date.now()
+  const perf = async <T>(stage: string, operation: () => Promise<T>): Promise<T> => {
+    const startedAt = Date.now()
+    let ok = false
+    try {
+      const result = await operation()
+      ok = true
+      return result
+    } finally {
+      console.info(`[perf] agent.${stage}`, { requestId, durationMs: Date.now() - startedAt, ok })
+    }
+  }
+  const requestId = crypto.randomUUID()
   const body = await c.req
     .json<{ task?: string; sessionId?: string; attachments?: UploadedAttachment[] }>()
     .catch(() => ({}) as { task?: string; sessionId?: string; attachments?: UploadedAttachment[] })
@@ -215,53 +230,76 @@ app.post('/api/agent/run', requireAuth, async (c) => {
   const requestedSessionId = typeof body.sessionId === 'string' && body.sessionId ? body.sessionId : undefined
   const ownerId = await getOwnerId(c)
 
-  // 每日花费上限（滚动 24 小时窗口，不是自然日）——放在这里、沙箱创建
-  // 之前检查，这样一个已经超额的请求不会还去白白付一次沙箱冷启动的
-  // 成本。鉴权关闭时 ownerId 是 undefined，不做额度控制（本地开发场景，
-  // 跟这个项目里"无 owner = 无隔离"的既有约定一致）。
-  if (ownerId) {
-    const spentToday = await getDailyCostUsd(ownerId).catch(() => 0)
-    if (spentToday >= DAILY_COST_LIMIT_USD) {
-      return c.json({ error: `今日额度已用完（$${DAILY_COST_LIMIT_USD.toFixed(2)}/天），请稍后再试。` }, 429)
+  // 独立读取并行启动。历史中的付费摘要仍要等待额度检查通过。
+  const quotaPromise = ownerId
+    ? perf('daily_cost', () => getDailyCostUsd(ownerId)).catch(() => 0)
+    : Promise.resolve(0)
+  const settingsPromise = ownerId
+    ? perf('settings', () => getAgentSettings(ownerId)).catch((err) => {
+      console.error('failed to load agent settings:', err)
+      return DEFAULT_AGENT_SETTINGS
+    })
+    : Promise.resolve(DEFAULT_AGENT_SETTINGS)
+
+  let lockedSessionId: string | undefined
+  let newSessionId: string | undefined
+  const contextPromise = (async () => {
+    let accessibleSessionId = requestedSessionId
+    if (accessibleSessionId) {
+      const access = await perf('session_access', () => resolveSessionAccess(accessibleSessionId!, ownerId))
+      if (access === 'forbidden') return { error: '无权访问该会话。', status: 403 as const }
+      if (access === 'not_found') accessibleSessionId = undefined
     }
-  }
+    const isNewSession = !accessibleSessionId
+    const sessionId = accessibleSessionId ?? crypto.randomUUID()
+    // 先验证归属并取得运行锁，再进行任何历史读取或摘要写入。
+    const runId = tryStartRun(sessionId)
+    if (!runId) return { error: '该会话有一条消息正在处理中，请稍候再试。', status: 409 as const }
+    lockedSessionId = sessionId
+    if (isNewSession) newSessionId = sessionId
+    const messages = isNewSession
+      ? await perf('history_init', () => initializeSessionForAgent(sessionId, ownerId))
+      : await perf('history_load', () => loadSessionMessagesForAgent(
+        sessionId, ownerId, async () => await quotaPromise < DAILY_COST_LIMIT_USD,
+      ))
+    return { sessionId, runId, isNewSession, messages }
+  })()
 
-  // 客户端传上来的 sessionId 永远只是用来查找服务器此前已签发的会话
-  // 的一个键，绝不会被直接采信当作真实会话使用。如果它对应不到当前
-  // 登录用户拥有的会话，就重新生成一个，而不是信任客户端给的 ID。
-  let accessibleSessionId = requestedSessionId
-  if (accessibleSessionId) {
-    const access = await resolveSessionAccess(accessibleSessionId, ownerId)
-    if (access === 'forbidden') {
-      return c.json({ error: '无权访问该会话。' }, 403)
-    }
-    if (access === 'not_found') accessibleSessionId = undefined
-  }
-  const isNewSession = !accessibleSessionId
-  const sessionId: string = accessibleSessionId ?? crypto.randomUUID()
-
-  // 同一个 session 同时只允许一条运行中的请求——两个标签页/一次网络重试
-  // 几乎同时发消息时，第二个会在这里直接被拒绝，而不是两边都去连接/操作
-  // 同一个沙箱。全新会话的 sessionId 是本次请求现生成的 uuid，天然不会
-  // 和任何其它请求撞上，这里始终会成功。见 agent/active-runs.ts。runId
-  // 是这条 run 的身份标识，之后会随每个 SSE 帧的 id 字段一起发给客户端，
-  // 断线重连时客户端要原样带回来——见下面 reconnect 路由的注释。
-  const runId = tryStartRun(sessionId)
-  if (!runId) {
-    return c.json({ error: '该会话有一条消息正在处理中，请稍候再试。' }, 409)
-  }
-
-  // 提前一次性加载好，供下面的沙箱创建/超时设置和 runAgentLoop 共用——
-  // 读取失败（数据库瞬时抖动）不应该让整个任务跑不起来，静默回退到默认设置。
-  const [settings, existingSandboxId] = await Promise.all([
-    ownerId
-      ? getAgentSettings(ownerId).catch((err) => {
-        console.error('failed to load agent settings:', err)
-        return DEFAULT_AGENT_SETTINGS
-      })
-      : Promise.resolve(DEFAULT_AGENT_SETTINGS),
-    getSandboxId(sessionId).catch(() => null),
+  // 等待所有准备操作结束后才释放锁，防止失败分支仍有后台写入。
+  const [quotaResult, settingsResult, contextResult] = await Promise.allSettled([
+    quotaPromise, settingsPromise, contextPromise,
   ])
+  const cleanupPreparation = async () => {
+    try {
+      if (newSessionId) {
+        await perf('unused_session_cleanup', () => deleteSession(newSessionId!)).catch((err) =>
+          console.error('failed to clean up unused new session:', err))
+      }
+    } finally {
+      if (lockedSessionId) finishRun(lockedSessionId)
+    }
+  }
+  if (quotaResult.status === 'fulfilled' && quotaResult.value >= DAILY_COST_LIMIT_USD) {
+    await cleanupPreparation()
+    return c.json({ error: `今日额度已用完（$${DAILY_COST_LIMIT_USD.toFixed(2)}/天），请稍后再试。` }, 429)
+  }
+  if (quotaResult.status === 'rejected' || settingsResult.status === 'rejected' || contextResult.status === 'rejected') {
+    await cleanupPreparation()
+    const failure = [quotaResult, settingsResult, contextResult].find((result) => result.status === 'rejected')
+    console.error('agent preparation failed:', failure)
+    return c.json({ error: '会话准备失败，请稍后重试。' }, 500)
+  }
+  const context = contextResult.value
+  if ('error' in context) {
+    await cleanupPreparation()
+    return c.json({ error: context.error }, context.status)
+  }
+  const { sessionId, runId, isNewSession, messages } = context
+  const settings = settingsResult.value
+  console.info('[perf] agent.preparation_complete', {
+    requestId, sessionId, runId, isNewSession, durationMs: Date.now() - requestStartedAt,
+  })
+
   const sandboxIdleTtlMs = settings.sandboxIdleMinutes * 60_000
 
   return streamSSE(c, async (stream) => {
@@ -297,60 +335,57 @@ app.post('/api/agent/run', requireAuth, async (c) => {
         publish(sessionId, { type: 'session', sessionId })
       }
 
-      // 如果该会话的沙箱还存活就复用它（参见下面的 setSandboxId），
-      // 而不是每次都付出冷启动 Sandbox.create() 的代价——这也是为什么
-      // 前面某一轮生成的文件到了后面调用 export_artifact 时依然存在的
-      // 原因。只要重连因为任何原因失败（过期、被回收、或从未存在过），
-      // 就回退到创建一个全新的沙箱。
-      let sandbox: Sandbox | undefined
-      if (existingSandboxId) {
-        try {
-          sandbox = await Sandbox.connect(existingSandboxId)
-        } catch {
-          sandbox = undefined
+      // The session row must exist before lazy initialization persists its sandbox ID.
+      const lazySandbox = createLazySandbox(async () => {
+        const startedAt = Date.now()
+        const existingSandboxId = isNewSession ? null : await perf('sandbox_lookup', () => getSandboxId(sessionId)).catch(() => null)
+        let sandbox: Sandbox | undefined
+        let reused = false
+        if (existingSandboxId) {
+          try {
+            sandbox = await perf('sandbox_connect', () => Sandbox.connect(existingSandboxId))
+            reused = true
+          } catch {
+            sandbox = undefined
+          }
         }
-      }
-      if (!sandbox) {
-        try {
-          // e2b 创建偶尔会因为瞬时网络错误而失败——值得先重试几次，
-          // 再放弃并告知用户。
-          sandbox = await withRetry(() => Sandbox.create({ timeoutMs: sandboxIdleTtlMs }), 3, 500)
-        } catch (err) {
-          console.error('Sandbox.create failed:', err)
-          await sendError('沙箱环境创建失败，请稍后重试。')
-          return
+        if (!sandbox) {
+          sandbox = await perf('sandbox_create', () =>
+            withRetry(() => Sandbox.create({ timeoutMs: sandboxIdleTtlMs }), 3, 500))
         }
-      }
-      console.info('[perf] agent.sandbox_ready', { sessionId, durationMs: Date.now() - runStartedAt, reused: Boolean(existingSandboxId && sandbox) })
+        const sandboxId = sandbox.sandboxId
+        await perf('sandbox_persist', () => setSandboxId(sessionId, sandboxId)).catch((err) =>
+          console.error('failed to persist sandboxId:', err))
+        console.info('[perf] agent.sandbox_ready', {
+          requestId, sessionId, runId, durationMs: Date.now() - startedAt, reused,
+        })
+        return sandbox
+      })
 
       try {
-        const messages = await loadSessionMessagesForAgent(sessionId, ownerId)
-        // 此时这一行记录必然已经存在（loadSessionMessagesForAgent 刚刚
-        // 访问过它）——可以放心持久化保存这个会话归属的沙箱，这样这个
-        // 对话里的下一条消息也能重新连接上它。
-        await setSandboxId(sessionId, sandbox.sandboxId).catch((err) =>
-          console.error('failed to persist sandboxId:', err),
-        )
         const turnStart = messages.length
-        const { note: attachmentNote, visionImages } = await attachFilesToSandbox(sandbox, sessionId, attachments, ownerId)
+        const { note: attachmentNote, visionImages } = attachments.length > 0
+          ? await perf('attachments', async () => attachFilesToSandbox(await lazySandbox.get(), sessionId, attachments, ownerId))
+          : { note: '', visionImages: [] }
         messages.push({ role: 'user', content: task + attachmentNote })
 
         try {
           const modelStartedAt = Date.now()
+          console.info('[perf] agent.prepared', { requestId, sessionId, runId, durationMs: modelStartedAt - runStartedAt, messageCount: messages.length })
           let firstEvent = true
-          for await (const event of runAgentLoop(messages, sandbox, sessionId, visionImages, settings, ownerId, () => isRunCancelled(sessionId), getRunSignal(sessionId, runId))) {
+          for await (const event of runAgentLoop(messages, lazySandbox.get, sessionId, visionImages, settings, ownerId, () => isRunCancelled(sessionId), getRunSignal(sessionId, runId), runId)) {
             if (firstEvent) {
-              console.info('[perf] agent.first_event', { sessionId, durationMs: Date.now() - modelStartedAt })
+              console.info('[perf] agent.first_event', { requestId, sessionId, runId, eventType: event.type, durationMs: Date.now() - modelStartedAt, sinceRequestMs: Date.now() - runStartedAt })
               firstEvent = false
             }
             publish(sessionId, event)
           }
-          console.info('[perf] agent.loop_complete', { sessionId, modelDurationMs: Date.now() - modelStartedAt, totalMs: Date.now() - runStartedAt })
+          console.info('[perf] agent.loop_complete', { requestId, sessionId, runId, sandboxUsed: Boolean(lazySandbox.peek()), modelDurationMs: Date.now() - modelStartedAt, totalMs: Date.now() - runStartedAt })
         } finally {
           // 即使出错也要把这一轮产生的内容持久化下来——runAgentLoop
           // 会就地修改 `messages`，所以就算这一轮没跑完，里面也已经有
           // 有价值的历史记录了。
-          await appendMessages(sessionId, messages.slice(turnStart)).catch((err) =>
+          await perf('messages_persist', () => appendMessages(sessionId, messages.slice(turnStart))).catch((err) =>
             console.error('failed to persist conversation turn:', err),
           )
         }
@@ -361,7 +396,10 @@ app.post('/api/agent/run', requireAuth, async (c) => {
         // 并不是把它杀掉——而是延长它的存活时间，这样这个会话在时间窗口
         // 内的下一条消息还能重新连接上同一个沙箱。没人再回来用的沙箱会
         // 通过 e2b 自身的超时机制自然过期；这里不需要做任何显式清理。
-        await sandbox.setTimeout(sandboxIdleTtlMs).catch((err) => console.error('sandbox.setTimeout failed:', err))
+        const sandbox = lazySandbox.peek()
+        if (sandbox) {
+          await perf('sandbox_keepalive', () => sandbox.setTimeout(sandboxIdleTtlMs)).catch((err) => console.error('sandbox.setTimeout failed:', err))
+        }
       }
     } finally {
       // 无论上面走到哪条路径（正常完成/沙箱创建失败提前 return/未预期的异常），
@@ -369,6 +407,7 @@ app.post('/api/agent/run', requireAuth, async (c) => {
       // 连接、释放并发锁），并把本连接自己的 sink 摘掉。
       detachSink(sessionId, sink)
       finishRun(sessionId)
+      console.info('[perf] agent.request_complete', { requestId, sessionId, runId, totalMs: Date.now() - runStartedAt })
     }
   })
 })

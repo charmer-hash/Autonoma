@@ -1,10 +1,10 @@
 import type OpenAI from 'openai'
-import { CommandExitError, type Sandbox } from 'e2b'
+import { CommandExitError } from 'e2b'
+import type { GetSandbox } from '../lazy-sandbox.js'
 
-// 代码执行相关工具，底层依托每次请求独立的 e2b 沙箱——请求结束后
-// 沙箱就会被销毁，所以这里写入的文件永远不会到达用户手中。
+// 代码执行工具按需连接会话沙箱；空闲过期后会重新创建。
 // 用户需要保留的内容请用 write_document（document.ts）。
-export function createSandboxTools(sandbox: Sandbox): {
+export function createSandboxTools(getSandbox: GetSandbox): {
   tools: OpenAI.Chat.ChatCompletionTool[]
   toolHandlers: Record<string, (args: unknown) => Promise<string>>
 } {
@@ -49,6 +49,7 @@ export function createSandboxTools(sandbox: Sandbox): {
 
   const toolHandlers: Record<string, (args: unknown) => Promise<string>> = {
     run_command: async (args) => {
+      const sandbox = await getSandbox()
       const command = String((args as { command?: unknown })?.command ?? '')
       try {
         const result = await sandbox.commands.run(command, { timeoutMs: 60_000 })
@@ -61,6 +62,7 @@ export function createSandboxTools(sandbox: Sandbox): {
       }
     },
     write_file: async (args) => {
+      const sandbox = await getSandbox()
       const { path, content } = args as { path?: unknown; content?: unknown }
       await sandbox.files.write(String(path ?? ''), String(content ?? ''))
       return JSON.stringify({ ok: true })
