@@ -30,4 +30,4 @@ COPY --from=builder --chown=node:node /app .
 WORKDIR /app/apps/server
 USER node
 EXPOSE 8787
-CMD ["node", "--env-file-if-exists=.env", "dist/index.js"]
+CMD ["node", "--env-file-if-exists=.env", "dist/server.js"]

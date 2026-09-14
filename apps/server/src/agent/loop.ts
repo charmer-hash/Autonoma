@@ -190,15 +190,6 @@ export async function* runAgentLoop(
             break
           }
         }
-        if (compacted) {
-          console.info('[耗时] 运行中压缩完成 agent.in_run_history_compaction', {
-            sessionId,
-            turn,
-            beforeTokens,
-            afterTokens: requestTokens,
-            hardLimit: CONTEXT_HARD_LIMIT,
-          })
-        }
       } catch (err) {
         // Folding is a context optimization; a failed summarizer must not
         // discard the complete in-flight history or abort the user task.
@@ -223,6 +214,16 @@ export async function* runAgentLoop(
       while (requestTokens > CONTEXT_HARD_LIMIT && modelMessages.length > 2) {
         modelMessages.splice(1, 1)
         requestTokens = estimateRequestTokens(requestMessages(), tools)
+      }
+      if (compacted) {
+        console.info('[耗时] 运行中压缩完成 agent.in_run_history_compaction', {
+          sessionId,
+          turn,
+          beforeTokens,
+          afterTokens: requestTokens,
+          hardLimit: CONTEXT_HARD_LIMIT,
+          reduced: requestTokens < beforeTokens,
+        })
       }
       if (requestTokens > CONTEXT_HARD_LIMIT) {
         console.error('[耗时] 上下文超过硬限制 agent.context_hard_limit_exceeded', {
