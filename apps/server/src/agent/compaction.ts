@@ -1,15 +1,19 @@
 import type OpenAI from 'openai'
-import { client, MODEL } from './client.js'
+import { client, COMPACTION_MODEL } from './client.js'
 
 // 运维层面的可调参数，约定与 OPENROUTER_MODEL 相同——无需重新部署即可调整，
 // 因为压缩的激进程度是那种需要观察真实使用情况后再调整的东西。
-const FOLD_TRIGGER_TOKENS = Number(process.env.COMPACTION_TRIGGER_TOKENS ?? 20000)
-const KEEP_TAIL_TOKENS = Number(process.env.COMPACTION_KEEP_TOKENS ?? 8000)
+const FOLD_TRIGGER_TOKENS = Number(process.env.COMPACTION_TRIGGER_TOKENS ?? 4000)
+const KEEP_TAIL_TOKENS = Number(process.env.COMPACTION_KEEP_TOKENS ?? 2000)
+const SUMMARY_MAX_TOKENS = Number(process.env.COMPACTION_MAX_TOKENS ?? 4000)
 const SUMMARY_BATCH_TOKENS = Number(process.env.COMPACTION_SUMMARY_BATCH_TOKENS ?? 12000)
 const SUMMARY_CONTEXT_TOKENS = Number(process.env.COMPACTION_SUMMARY_CONTEXT_TOKENS ?? 32768)
 const SUMMARY_OUTPUT_RESERVE_TOKENS = Number(process.env.COMPACTION_SUMMARY_OUTPUT_RESERVE_TOKENS ?? 1000)
 const SUMMARY_SAFETY_MARGIN_TOKENS = Number(process.env.COMPACTION_SUMMARY_SAFETY_MARGIN_TOKENS ?? 1000)
 const SUMMARY_INPUT_LIMIT = SUMMARY_CONTEXT_TOKENS - SUMMARY_OUTPUT_RESERVE_TOKENS - SUMMARY_SAFETY_MARGIN_TOKENS
+const MODEL_TOOL_RESULT_MAX_CHARS = Number(process.env.AGENT_TOOL_RESULT_MAX_CHARS ?? 12000)
+const SUMMARY_TOOL_RESULT_MAX_CHARS = Number(process.env.COMPACTION_TOOL_RESULT_MAX_CHARS ?? 8000)
+const COMPACTION_RESPONSE_LOG_CHARS = Number(process.env.AGENT_COMPACTION_RESPONSE_LOG_CHARS ?? 4000)
 
 // 字符数换算 token 数的系数。这里的内容混合了中文文本
 // （比经典的英文 ~4 字符/token 经验值更密）和 JSON 格式的工具
@@ -26,7 +30,36 @@ export function estimateRequestTokens(
   msgs: OpenAI.Chat.ChatCompletionMessageParam[],
   tools: OpenAI.Chat.ChatCompletionTool[],
 ): number {
-  return Math.ceil(JSON.stringify({ messages: msgs, tools }).length / CHARS_PER_TOKEN)
+  // Base64 图片不会按文本 token 计入；按固定占位成本估算，避免 10MB 图片
+  // 被误算成数百万 tokens。
+  const sanitized = JSON.parse(JSON.stringify(msgs, (_key, value) => {
+    if (value && typeof value === 'object' && typeof value.url === 'string' && value.url.startsWith('data:image/')) {
+      return { ...value, url: '[image]' }
+    }
+    return value
+  }))
+  return Math.ceil(JSON.stringify({ messages: sanitized, tools }).length / CHARS_PER_TOKEN)
+}
+
+// Keep the tool message (and therefore the tool-call protocol) while reducing
+// only the payload sent to the model. The complete result remains in the
+// caller's persisted `messages` array.
+export function compactToolResultsForModel(
+  messages: OpenAI.Chat.ChatCompletionMessageParam[],
+  maxChars = MODEL_TOOL_RESULT_MAX_CHARS,
+): boolean {
+  let changed = false
+  for (const message of messages) {
+    if (message.role !== 'tool' || typeof message.content !== 'string' || message.content.length <= maxChars) continue
+
+    const marker = `\n...[工具结果已截断，完整结果保存在会话历史中；如需更多内容请继续调用工具]...\n`
+    const available = Math.max(0, maxChars - marker.length)
+    const headChars = Math.ceil(available * 0.7)
+    const tailChars = Math.max(0, available - headChars)
+    message.content = message.content.slice(0, headChars) + marker + (tailChars > 0 ? message.content.slice(-tailChars) : '')
+    changed = true
+  }
+  return changed
 }
 
 export interface MessageRow {
@@ -96,7 +129,10 @@ function serializeForSummaryPrompt(msgs: OpenAI.Chat.ChatCompletionMessageParam[
     } else if (m.role === 'tool') {
       const name = toolNameById.get(m.tool_call_id) ?? '未知工具'
       const raw = typeof m.content === 'string' ? m.content : JSON.stringify(m.content)
-      lines.push(`工具结果（${name}）：${raw}`)
+      const limited = raw.length > SUMMARY_TOOL_RESULT_MAX_CHARS
+        ? raw.slice(0, SUMMARY_TOOL_RESULT_MAX_CHARS) + '\n...(工具结果为完整历史内容，此处为摘要输入截断)...'
+        : raw
+      lines.push(`工具结果（${name}）：${limited}`)
     }
   }
   return lines.join('\n')
@@ -169,25 +205,80 @@ export async function summarizeFold(
     )
   }
 
-  const res = await client.chat.completions.create({
-    model: MODEL,
-    messages: [
-      { role: 'system', content: SUMMARIZER_SYSTEM_PROMPT },
-      { role: 'user', content: userContent },
-    ],
-    temperature: 0,
-    max_tokens: 1000,
+  const startedAt = Date.now()
+  console.info('[耗时] 压缩模型请求开始 agent.compaction_model_request', {
+    model: COMPACTION_MODEL,
+    messageCount: 2,
+    inputTokens: requestTokens,
+    inputBytes: Buffer.byteLength(userContent, 'utf8'),
+    foldedMessageCount: toFold.length,
   })
-
-  return res.choices[0]?.message?.content?.trim() || existingSummary || ''
+  try {
+    const res = await client.chat.completions.create({
+      model: COMPACTION_MODEL,
+      messages: [
+        { role: 'system', content: SUMMARIZER_SYSTEM_PROMPT },
+        { role: 'user', content: userContent },
+      ],
+      temperature: 0,
+      max_tokens: SUMMARY_MAX_TOKENS,
+    })
+    console.info('[耗时] 压缩模型请求完成 agent.compaction_model_complete', {
+      model: COMPACTION_MODEL,
+      durationMs: Date.now() - startedAt,
+      promptTokens: res.usage?.prompt_tokens,
+      completionTokens: res.usage?.completion_tokens,
+      responseChars: res.choices[0]?.message?.content?.length ?? 0,
+      response: (() => {
+        const response = res.choices[0]?.message?.content ?? ''
+        return response.length > COMPACTION_RESPONSE_LOG_CHARS
+          ? `${response.slice(0, COMPACTION_RESPONSE_LOG_CHARS)}...(已截断，完整长度 ${response.length} 字符)`
+          : response
+      })(),
+    })
+    const result = res.choices[0]?.message?.content?.trim() || existingSummary || ''
+    // 额外按估算值截断，防止上游忽略 max_tokens 或累计摘要失控。
+    const maxChars = SUMMARY_MAX_TOKENS * CHARS_PER_TOKEN
+    return result.length > maxChars ? `${result.slice(0, maxChars)}\n[摘要已截断]` : result
+  } catch (err) {
+    console.info('[耗时] 压缩模型请求失败 agent.compaction_model_failed', {
+      model: COMPACTION_MODEL,
+      durationMs: Date.now() - startedAt,
+      error: err instanceof Error ? err.message : String(err),
+    })
+    throw err
+  }
 }
 
 export async function summarizeFoldInBatches(
   existingSummary: string | null,
   toFold: OpenAI.Chat.ChatCompletionMessageParam[],
 ): Promise<string> {
+  const startedAt = Date.now()
+  const totalRequestTokens = estimateSummaryRequestTokens(existingSummary, toFold)
+  if (totalRequestTokens <= SUMMARY_INPUT_LIMIT) {
+    console.info('[耗时] 历史压缩开始 agent.compaction_start', {
+      batchCount: 1,
+      foldedMessageCount: toFold.length,
+      inputTokens: totalRequestTokens,
+    })
+    const summary = await summarizeFold(existingSummary, toFold)
+    console.info('[耗时] 历史压缩完成 agent.compaction_complete', {
+      batchCount: 1,
+      foldedMessageCount: toFold.length,
+      durationMs: Date.now() - startedAt,
+    })
+    return summary
+  }
+
+  const batches = splitSummaryBatches(existingSummary, toFold)
+  console.info('[耗时] 历史压缩开始 agent.compaction_start', {
+    batchCount: batches.length,
+    foldedMessageCount: toFold.length,
+    inputTokens: totalRequestTokens,
+  })
   let summary = existingSummary
-  for (const batch of splitSummaryBatches(existingSummary, toFold)) {
+  for (const batch of batches) {
     if (estimateSummaryRequestTokens(summary, batch) > SUMMARY_INPUT_LIMIT) {
       throw new Error(
         `历史摘要批次过长（估算 ${estimateSummaryRequestTokens(summary, batch)} tokens，限制 ${SUMMARY_INPUT_LIMIT} tokens），无法在不裁剪原始工具结果的情况下继续压缩`,
@@ -195,6 +286,11 @@ export async function summarizeFoldInBatches(
     }
     summary = await summarizeFold(summary, batch)
   }
+  console.info('[耗时] 历史压缩完成 agent.compaction_complete', {
+    batchCount: batches.length,
+    foldedMessageCount: toFold.length,
+    durationMs: Date.now() - startedAt,
+  })
   return summary ?? ''
 }
 

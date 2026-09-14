@@ -38,7 +38,7 @@ import {
   resolveSessionAccess,
   setSandboxId,
 } from './db/sessions.js'
-import { getAgentSettings } from './db/users.js'
+import { getAgentSettings, getUsernameById, updateAgentSettings } from './db/users.js'
 import {
   getObjectStream,
   getPresignedDownloadUrl,
@@ -173,6 +173,21 @@ app.get('/api/sessions/:sessionId/attachments/:filename', requireAuth, async (c)
 // 文件字节本身不会经过这台服务器。
 app.route('/api/uploads', uploadsRouter)
 
+app.get('/api/settings', requireAuth, async (c) => {
+  const ownerId = await getOwnerId(c)
+  if (!ownerId) return c.json(DEFAULT_AGENT_SETTINGS)
+  return c.json(await getAgentSettings(ownerId))
+})
+
+app.put('/api/settings', requireAuth, async (c) => {
+  const ownerId = await getOwnerId(c)
+  if (!ownerId) return c.json({ ok: true, persisted: false })
+  const settings = await c.req.json<typeof DEFAULT_AGENT_SETTINGS>().catch(() => null)
+  if (!settings) return c.json({ error: '设置格式不正确。' }, 400)
+  await updateAgentSettings(ownerId, settings)
+  return c.json({ ok: true, persisted: true })
+})
+
 // 审批模式（AgentSettings.approvalMode === 'confirm'）下，run_command/write_file/
 // export_artifact 执行前会先在 SSE 里发出 approval_required 事件并挂起等待——
 // 这个路由就是前端点批准/拒绝按钮时唤醒它的入口，见 agent/approvals.ts。
@@ -207,6 +222,21 @@ app.post('/api/agent/stop', requireAuth, async (c) => {
 
 app.post('/api/agent/run', requireAuth, async (c) => {
   const requestStartedAt = Date.now()
+  const stageLabels: Record<string, string> = {
+    daily_cost: '读取每日额度',
+    settings: '读取 Agent 设置',
+    session_access: '检查会话权限',
+    history_init: '初始化历史记录',
+    history_load: '加载历史记录',
+    unused_session_cleanup: '清理未使用会话',
+    sandbox_lookup: '查找沙箱',
+    sandbox_connect: '连接沙箱',
+    sandbox_create: '创建沙箱',
+    sandbox_persist: '保存沙箱信息',
+    attachments: '处理附件',
+    messages_persist: '保存对话消息',
+    sandbox_keepalive: '延长沙箱有效期',
+  }
   const perf = async <T>(stage: string, operation: () => Promise<T>): Promise<T> => {
     const startedAt = Date.now()
     let ok = false
@@ -215,7 +245,7 @@ app.post('/api/agent/run', requireAuth, async (c) => {
       ok = true
       return result
     } finally {
-      console.info(`[perf] agent.${stage}`, { requestId, durationMs: Date.now() - startedAt, ok })
+      console.info(`[耗时] ${stageLabels[stage] ?? stage} agent.${stage}`, { requestId, durationMs: Date.now() - startedAt, ok })
     }
   }
   const requestId = crypto.randomUUID()
@@ -229,12 +259,15 @@ app.post('/api/agent/run', requireAuth, async (c) => {
   const attachments = Array.isArray(body.attachments) ? body.attachments : []
   const requestedSessionId = typeof body.sessionId === 'string' && body.sessionId ? body.sessionId : undefined
   const ownerId = await getOwnerId(c)
+  // 用户名按已验证的 ownerId 缓存，避免每轮增加身份查询。
+  const isAdmin = ownerId ? (await getUsernameById(ownerId).catch(() => undefined)) === 'admin' : false
 
   // 独立读取并行启动。历史中的付费摘要仍要等待额度检查通过。
-  const quotaPromise = ownerId
+  const quotaPromise = ownerId && !isAdmin
     ? perf('daily_cost', () => getDailyCostUsd(ownerId)).catch(() => 0)
     : Promise.resolve(0)
-  const settingsPromise = ownerId
+  // admin 直接使用默认设置，省去设置读取和缓存访问。
+  const settingsPromise = ownerId && !isAdmin
     ? perf('settings', () => getAgentSettings(ownerId)).catch((err) => {
       console.error('failed to load agent settings:', err)
       return DEFAULT_AGENT_SETTINGS
@@ -246,7 +279,7 @@ app.post('/api/agent/run', requireAuth, async (c) => {
   const contextPromise = (async () => {
     let accessibleSessionId = requestedSessionId
     if (accessibleSessionId) {
-      const access = await perf('session_access', () => resolveSessionAccess(accessibleSessionId!, ownerId))
+      const access = isAdmin ? 'owned' : await perf('session_access', () => resolveSessionAccess(accessibleSessionId!, ownerId))
       if (access === 'forbidden') return { error: '无权访问该会话。', status: 403 as const }
       if (access === 'not_found') accessibleSessionId = undefined
     }
@@ -257,18 +290,16 @@ app.post('/api/agent/run', requireAuth, async (c) => {
     if (!runId) return { error: '该会话有一条消息正在处理中，请稍候再试。', status: 409 as const }
     lockedSessionId = sessionId
     if (isNewSession) newSessionId = sessionId
-    const messages = isNewSession
-      ? await perf('history_init', () => initializeSessionForAgent(sessionId, ownerId))
-      : await perf('history_load', () => loadSessionMessagesForAgent(
-        sessionId, ownerId, async () => await quotaPromise < DAILY_COST_LIMIT_USD,
+    const messagesPromise = isNewSession
+      ? perf('history_init', () => initializeSessionForAgent(sessionId, ownerId))
+      : perf('history_load', () => loadSessionMessagesForAgent(
+        sessionId, ownerId, async () => isAdmin || await quotaPromise < DAILY_COST_LIMIT_USD,
       ))
-    return { sessionId, runId, isNewSession, messages }
+    return { sessionId, runId, isNewSession, messages: messagesPromise }
   })()
 
   // 等待所有准备操作结束后才释放锁，防止失败分支仍有后台写入。
-  const [quotaResult, settingsResult, contextResult] = await Promise.allSettled([
-    quotaPromise, settingsPromise, contextPromise,
-  ])
+  const [quotaResult, contextResult] = await Promise.allSettled([quotaPromise, contextPromise])
   const cleanupPreparation = async () => {
     try {
       if (newSessionId) {
@@ -279,31 +310,34 @@ app.post('/api/agent/run', requireAuth, async (c) => {
       if (lockedSessionId) finishRun(lockedSessionId)
     }
   }
-  if (quotaResult.status === 'fulfilled' && quotaResult.value >= DAILY_COST_LIMIT_USD) {
+  const waitForContextMessages = async () => {
+    if (contextResult.status === 'fulfilled' && !('error' in contextResult.value)) {
+      await contextResult.value.messages.catch(() => {})
+    }
+  }
+  if (!isAdmin && quotaResult.status === 'fulfilled' && quotaResult.value >= DAILY_COST_LIMIT_USD) {
+    await waitForContextMessages()
     await cleanupPreparation()
     return c.json({ error: `今日额度已用完（$${DAILY_COST_LIMIT_USD.toFixed(2)}/天），请稍后再试。` }, 429)
   }
-  if (quotaResult.status === 'rejected' || settingsResult.status === 'rejected' || contextResult.status === 'rejected') {
+  if (quotaResult.status === 'rejected' || contextResult.status === 'rejected') {
+    await waitForContextMessages()
     await cleanupPreparation()
-    const failure = [quotaResult, settingsResult, contextResult].find((result) => result.status === 'rejected')
+    const failure = [quotaResult, contextResult].find((result) => result.status === 'rejected')
     console.error('agent preparation failed:', failure)
     return c.json({ error: '会话准备失败，请稍后重试。' }, 500)
   }
   const context = contextResult.value
   if ('error' in context) {
+    await waitForContextMessages()
     await cleanupPreparation()
     return c.json({ error: context.error }, context.status)
   }
-  const { sessionId, runId, isNewSession, messages } = context
-  const settings = settingsResult.value
-  console.info('[perf] agent.preparation_complete', {
-    requestId, sessionId, runId, isNewSession, durationMs: Date.now() - requestStartedAt,
-  })
-
-  const sandboxIdleTtlMs = settings.sandboxIdleMinutes * 60_000
+  const { sessionId, runId, isNewSession, messages: messagesPromise } = context
 
   return streamSSE(c, async (stream) => {
     const runStartedAt = requestStartedAt
+    console.info('[耗时] SSE 连接已建立 agent.sse_open', { requestId, sessionId, runId, sinceRequestMs: Date.now() - runStartedAt })
     // 本连接自己就是这次运行的第一个订阅者——所有事件都经 publish() 走
     // active-runs 的缓冲区再分发到这里，而不是直接 stream.writeSSE，这样
     // 断线重连的客户端才能通过同一份缓冲区补上错过的内容（见
@@ -327,6 +361,12 @@ app.post('/api/agent/run', requireAuth, async (c) => {
     stream.onAbort(() => detachSink(sessionId, sink))
 
     try {
+      const [settings, messages] = await Promise.all([settingsPromise, messagesPromise])
+      console.info('[耗时] 准备阶段完成 agent.preparation_complete', {
+        requestId, sessionId, runId, isNewSession, durationMs: Date.now() - requestStartedAt,
+      })
+      const sandboxIdleTtlMs = settings.sandboxIdleMinutes * 60_000
+
       async function sendError(message: string) {
         publish(sessionId, { type: 'error', message })
       }
@@ -356,7 +396,7 @@ app.post('/api/agent/run', requireAuth, async (c) => {
         const sandboxId = sandbox.sandboxId
         await perf('sandbox_persist', () => setSandboxId(sessionId, sandboxId)).catch((err) =>
           console.error('failed to persist sandboxId:', err))
-        console.info('[perf] agent.sandbox_ready', {
+        console.info('[耗时] 沙箱就绪 agent.sandbox_ready', {
           requestId, sessionId, runId, durationMs: Date.now() - startedAt, reused,
         })
         return sandbox
@@ -371,16 +411,16 @@ app.post('/api/agent/run', requireAuth, async (c) => {
 
         try {
           const modelStartedAt = Date.now()
-          console.info('[perf] agent.prepared', { requestId, sessionId, runId, durationMs: modelStartedAt - runStartedAt, messageCount: messages.length })
+          console.info('[耗时] 即将进入 Agent 主循环 agent.prepared', { requestId, sessionId, runId, durationMs: modelStartedAt - runStartedAt, messageCount: messages.length })
           let firstEvent = true
           for await (const event of runAgentLoop(messages, lazySandbox.get, sessionId, visionImages, settings, ownerId, () => isRunCancelled(sessionId), getRunSignal(sessionId, runId), runId)) {
             if (firstEvent) {
-              console.info('[perf] agent.first_event', { requestId, sessionId, runId, eventType: event.type, durationMs: Date.now() - modelStartedAt, sinceRequestMs: Date.now() - runStartedAt })
+              console.info('[耗时] 首个前端事件 agent.first_event', { requestId, sessionId, runId, eventType: event.type, durationMs: Date.now() - modelStartedAt, sinceRequestMs: Date.now() - runStartedAt })
               firstEvent = false
             }
             publish(sessionId, event)
           }
-          console.info('[perf] agent.loop_complete', { requestId, sessionId, runId, sandboxUsed: Boolean(lazySandbox.peek()), modelDurationMs: Date.now() - modelStartedAt, totalMs: Date.now() - runStartedAt })
+          console.info('[耗时] Agent 主循环完成 agent.loop_complete', { requestId, sessionId, runId, sandboxUsed: Boolean(lazySandbox.peek()), modelDurationMs: Date.now() - modelStartedAt, totalMs: Date.now() - runStartedAt })
         } finally {
           // 即使出错也要把这一轮产生的内容持久化下来——runAgentLoop
           // 会就地修改 `messages`，所以就算这一轮没跑完，里面也已经有
@@ -407,7 +447,7 @@ app.post('/api/agent/run', requireAuth, async (c) => {
       // 连接、释放并发锁），并把本连接自己的 sink 摘掉。
       detachSink(sessionId, sink)
       finishRun(sessionId)
-      console.info('[perf] agent.request_complete', { requestId, sessionId, runId, totalMs: Date.now() - runStartedAt })
+      console.info('[耗时] Agent 请求全部完成 agent.request_complete', { requestId, sessionId, runId, totalMs: Date.now() - runStartedAt })
     }
   })
 })

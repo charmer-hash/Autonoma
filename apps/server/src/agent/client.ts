@@ -10,6 +10,10 @@ export const client = new OpenAI({
 // 因此把它做成环境变量，方便切换模型时无需改代码。
 export const MODEL = process.env.OPENROUTER_MODEL ?? 'deepseek/deepseek-v4-pro'
 
+// 历史压缩只需要把旧对话整理成简短摘要，不需要占用正式回答模型。
+// 单独配置可以降低首 token 延迟和摘要成本。
+export const COMPACTION_MODEL = process.env.OPENROUTER_COMPACTION_MODEL ?? 'deepseek/deepseek-v3.2'
+
 // MODEL 只支持文本（DeepSeek 在 OpenRouter 上不支持视觉输入）——
 // 任何需要让模型看图片的 LLM 调用都会改用这个模型，
 // 且仅限那一次调用。参见 loop.ts 中按轮次选择模型的逻辑。

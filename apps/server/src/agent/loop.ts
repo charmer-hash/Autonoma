@@ -7,7 +7,7 @@ import { buildVisionMessage, type PendingVisionImage } from './tools/vision.js'
 import { insertUsageEvent } from '../db/usage.js'
 import { DEFAULT_AGENT_SETTINGS, type AgentSettings } from '@autonoma/shared'
 import type { AgentEvent } from '@autonoma/shared'
-import { compactMessagesForModel, estimateRequestTokens } from './compaction.js'
+import { compactMessagesForModel, compactToolResultsForModel, estimateRequestTokens } from './compaction.js'
 
 // OpenRouter 在流式响应的最后一个 chunk 里带上真实花费——`cost` 是它
 // 自己扩展出来的字段，标准 openai SDK 的 CompletionUsage 类型里没有，
@@ -15,11 +15,9 @@ import { compactMessagesForModel, estimateRequestTokens } from './compaction.js'
 type UsageWithCost = OpenAI.CompletionUsage & { cost?: number }
 
 const MAX_STREAM_RETRIES = 2
-const MODEL_CONTEXT_TOKENS = Number(process.env.AGENT_CONTEXT_WINDOW_TOKENS ?? 32768)
-const MODEL_OUTPUT_RESERVE_TOKENS = Number(process.env.AGENT_OUTPUT_RESERVE_TOKENS ?? 4096)
-const CONTEXT_SAFETY_MARGIN_TOKENS = Number(process.env.AGENT_CONTEXT_SAFETY_MARGIN_TOKENS ?? 1000)
-const CONTEXT_HARD_LIMIT = MODEL_CONTEXT_TOKENS - MODEL_OUTPUT_RESERVE_TOKENS - CONTEXT_SAFETY_MARGIN_TOKENS
-const CONTEXT_SOFT_LIMIT = Math.floor(CONTEXT_HARD_LIMIT * 0.8)
+const CONTEXT_HARD_LIMIT = Number(process.env.AGENT_CONTEXT_HARD_LIMIT_TOKENS ?? 15000)
+const CONTEXT_SOFT_LIMIT = Number(process.env.AGENT_CONTEXT_SOFT_LIMIT_TOKENS ?? 10000)
+const MODEL_RESPONSE_LOG_CHARS = Number(process.env.AGENT_MODEL_RESPONSE_LOG_CHARS ?? 4000)
 
 // 审批模式（settings.approvalMode === 'confirm'）下，只有这几个会改动
 // 沙箱状态/产出交付物的工具需要用户先点确认——web_search/write_document/
@@ -94,7 +92,9 @@ export async function* runAgentLoop(
   // `messages` is the complete history that the caller persists. Keep a
   // separate mutable context so mid-run folding never removes raw history
   // from the persisted conversation.
-  const modelMessages = messages.slice()
+  // Clone message objects so model-only truncation never mutates the complete
+  // history that the caller persists after the run.
+  const modelMessages = messages.map((message) => ({ ...message }))
 
   // 排队等待展示给模型的图片，*仅*用于下一次 LLM 调用
   // （参见 tools/vision.ts 的 buildVisionMessage）——这里先用本轮
@@ -140,6 +140,7 @@ export async function* runAgentLoop(
   const toolsNote = buildToolsNote(settings)
 
   try {
+    let webSearchRounds = 0
     for (let turn = 0; turn < settings.maxTurns; turn++) {
       if (isCancelled()) return
       const visionMessages = buildVisionMessage(pendingVisionImages)
@@ -165,16 +166,32 @@ export async function* runAgentLoop(
         ]
         const nonHistoryTokens = estimateRequestTokens(nonHistoryMessages, tools)
         const historyTriggerTokens = Math.max(1, CONTEXT_SOFT_LIMIT - nonHistoryTokens)
+        console.info('[耗时] 上下文预算检查 agent.context_budget', {
+          sessionId, runId, turn,
+          requestTokens,
+          nonHistoryTokens,
+          historyTriggerTokens,
+          softLimit: CONTEXT_SOFT_LIMIT,
+          hardLimit: CONTEXT_HARD_LIMIT,
+          modelMessages: modelMessages.length,
+        })
         while (requestTokens > CONTEXT_SOFT_LIMIT) {
+          const tokensBeforeFold = requestTokens
           const folded = await compactMessagesForModel(modelMessages, {
             triggerTokens: historyTriggerTokens,
+            keepTokens: Math.max(1000, Math.min(2000, Math.floor(historyTriggerTokens * 0.5))),
           })
           if (!folded) break
           compacted = true
           requestTokens = estimateRequestTokens(requestMessages(), tools)
+          // 摘要没有令请求变短时停止，避免重复调用压缩模型造成请求卡死。
+          if (requestTokens >= tokensBeforeFold) {
+            console.warn('[耗时] 压缩未降低上下文，停止继续压缩', { sessionId, turn, tokensBeforeFold, requestTokens })
+            break
+          }
         }
         if (compacted) {
-          console.info('[agent] in-run history compaction', {
+          console.info('[耗时] 运行中压缩完成 agent.in_run_history_compaction', {
             sessionId,
             turn,
             beforeTokens,
@@ -187,8 +204,28 @@ export async function* runAgentLoop(
         // discard the complete in-flight history or abort the user task.
         console.error('in-run history compaction failed:', err)
       }
+      // A single current-turn tool result can be larger than the entire
+      // remaining budget, so reduce tool payloads further before giving up.
+      for (const maxChars of [8000, 4000, 2000]) {
+        if (requestTokens <= CONTEXT_HARD_LIMIT) break
+        if (compactToolResultsForModel(modelMessages, maxChars)) {
+          requestTokens = estimateRequestTokens(requestMessages(), tools)
+        }
+      }
+      // 最后一道保险：摘要/历史仍过长时，进一步压缩所有工具结果，
+      // 确保不会因压缩结果异常膨胀而直接放弃本轮请求。
       if (requestTokens > CONTEXT_HARD_LIMIT) {
-        console.error('[agent] context hard limit exceeded', {
+        compactToolResultsForModel(modelMessages, 500)
+        requestTokens = estimateRequestTokens(requestMessages(), tools)
+      }
+      // 工具结果之外的历史也可能过大，丢弃最旧的完整消息，避免卡在
+      // 硬限制错误；系统消息始终保留。
+      while (requestTokens > CONTEXT_HARD_LIMIT && modelMessages.length > 2) {
+        modelMessages.splice(1, 1)
+        requestTokens = estimateRequestTokens(requestMessages(), tools)
+      }
+      if (requestTokens > CONTEXT_HARD_LIMIT) {
+        console.error('[耗时] 上下文超过硬限制 agent.context_hard_limit_exceeded', {
           sessionId,
           turn,
           requestTokens,
@@ -221,7 +258,7 @@ export async function* runAgentLoop(
         let yieldedAnything = false
         const requestStartedAt = Date.now()
         const context = { sessionId, runId, turn, attempt, model: modelForThisCall }
-        console.info('[perf] agent.model_request', { ...context, messageCount: messages.length + visionMessages.length + 1 + Number(Boolean(toolsNote)) + Number(Boolean(preferenceNote)) })
+        console.info('[耗时] 正式模型请求开始 agent.model_request', { ...context, messageCount: messages.length + visionMessages.length + 1 + Number(Boolean(toolsNote)) + Number(Boolean(preferenceNote)) })
         try {
           const chunkStream = await client.chat.completions.create({
             model: modelForThisCall,
@@ -264,13 +301,24 @@ export async function* runAgentLoop(
               }
             }
           }
-          console.info('[perf] agent.model_complete', {
+          console.info('[耗时] 正式模型请求完成 agent.model_complete', {
             ...context, durationMs: Date.now() - requestStartedAt, finishReason,
             promptTokens: usage?.prompt_tokens, completionTokens: usage?.completion_tokens,
+            responseChars: content.length,
+            response: content.length > MODEL_RESPONSE_LOG_CHARS
+              ? `${content.slice(0, MODEL_RESPONSE_LOG_CHARS)}...(已截断，完整长度 ${content.length} 字符)`
+              : content,
+            toolCalls: toolCalls.map((call) => ({
+              id: call.id,
+              name: call.function.name,
+              arguments: call.function.arguments.length > MODEL_RESPONSE_LOG_CHARS
+                ? `${call.function.arguments.slice(0, MODEL_RESPONSE_LOG_CHARS)}...(已截断，完整长度 ${call.function.arguments.length} 字符)`
+                : call.function.arguments,
+            })),
           })
           break
         } catch (err) {
-          console.info('[perf] agent.model_failed', { ...context, durationMs: Date.now() - requestStartedAt })
+          console.info('[耗时] 正式模型请求失败 agent.model_failed', { ...context, durationMs: Date.now() - requestStartedAt })
           if (!yieldedAnything && attempt < MAX_STREAM_RETRIES && isTransientStreamError(err)) {
             // 这次失败的尝试的用量/费用永远拿不到了——OpenRouter 只在流
             // 正常结束的收尾 chunk 里带 usage/cost，连接在那之前就断开的话，
@@ -316,6 +364,9 @@ export async function* runAgentLoop(
       }
 
       if (finishReason === 'tool_calls' && toolCalls.length > 0) {
+        if (toolCalls.some((call) => call.function.name === 'web_search')) {
+          webSearchRounds++
+        }
         messages.push({ role: 'assistant', content: content || null, tool_calls: toolCalls })
         modelMessages.push({ role: 'assistant', content: content || null, tool_calls: toolCalls })
 
@@ -386,6 +437,15 @@ export async function* runAgentLoop(
             return { toolCall, args, isDocument, isArtifact }
           })
 
+          if (webSearchRounds > 2 && run.some((call) => call.function.name === 'web_search')) {
+            const results = run.map(() => JSON.stringify({ error: 'web_search 最多允许 2 轮，本次不再执行搜索，请根据已有资料直接回答。' }))
+            for (let i = 0; i < prepared.length; i++) {
+              modelMessages.push({ role: 'tool', tool_call_id: prepared[i].toolCall.id, content: results[i] })
+              messages.push({ role: 'tool', tool_call_id: prepared[i].toolCall.id, content: results[i] })
+            }
+            continue
+          }
+
           for (const { toolCall, args, isDocument } of prepared) {
             if (!isDocument) {
               yield { type: 'tool_call', id: toolCall.id, name: toolCall.function.name, args }
@@ -395,13 +455,16 @@ export async function* runAgentLoop(
           const results = await Promise.all(
             prepared.map(async ({ toolCall, args }) => {
               const startedAt = Date.now()
+              console.info('[耗时] 工具开始执行 agent.tool_start', {
+                sessionId, runId, turn, toolCallId: toolCall.id, name: toolCall.function.name,
+              })
               try {
                 const handler = toolHandlers[toolCall.function.name]
                 return handler ? await handler(args) : `Unknown tool: ${toolCall.function.name}`
               } catch (err) {
                 return `Tool execution failed: ${err instanceof Error ? err.message : String(err)}`
               } finally {
-                console.info('[perf] agent.tool_complete', {
+                console.info('[耗时] 工具执行完成 agent.tool_complete', {
                   sessionId, runId, turn, toolCallId: toolCall.id, name: toolCall.function.name,
                   durationMs: Date.now() - startedAt,
                 })

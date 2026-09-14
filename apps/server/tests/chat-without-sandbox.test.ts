@@ -27,3 +27,27 @@ test('a streamed chat reply completes with sandbox tools enabled but no sandbox 
     client.chat.completions.create = original
   }
 })
+
+test('web_search preserves the returned result content', async () => {
+  const originalKey = process.env.TAVILY_API_KEY
+  const originalFetch = globalThis.fetch
+  process.env.TAVILY_API_KEY = 'test-key'
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    results: [
+      { title: 'Alpha', url: 'https://example.com/a', content: 'A'.repeat(800) },
+      { title: 'Beta', url: 'https://example.com/b', content: 'B'.repeat(600) },
+      { title: 'Gamma', url: 'https://example.com/c', content: 'C'.repeat(500) },
+    ],
+  }), { status: 200 }) as typeof fetch
+
+  try {
+    const { searchToolHandlers } = await import('../src/agent/tools/search.js')
+    const result = JSON.parse(await searchToolHandlers.web_search({ query: 'example' }))
+    assert.equal(result.results.length, 3)
+    assert.equal(result.results[0].snippet.length, 800)
+  } finally {
+    globalThis.fetch = originalFetch
+    if (originalKey === undefined) delete process.env.TAVILY_API_KEY
+    else process.env.TAVILY_API_KEY = originalKey
+  }
+})

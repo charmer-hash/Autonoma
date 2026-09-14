@@ -68,16 +68,16 @@ export const searchToolHandlers: Record<string, (args: unknown) => Promise<strin
         const r = await tavilyFetch('https://api.tavily.com/search', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ api_key: apiKey, query, max_results: 5 }),
+          body: JSON.stringify({ api_key: apiKey, query, max_results: 1 }),
         })
         // 只对服务端/临时性故障重试；4xx（key 错误、请求错误）
         // 重试也不会自愈，所以直接立即报出来，而不是干等着重试。
         if (!r.ok && r.status >= 500) throw new Error(`search upstream ${r.status}`)
-        console.info('[perf] tavily.search', { durationMs: Date.now() - startedAt, status: r.status })
+        console.info('[耗时] Tavily 搜索完成 tavily.search', { durationMs: Date.now() - startedAt, status: r.status })
         return r
       })
     } catch (err) {
-      console.error('[tavily] search_failed', {
+      console.error('[耗时] Tavily 搜索失败 tavily.search_failed', {
         requestId,
         durationMs: Date.now() - requestStartedAt,
         error: err instanceof Error ? err.message : String(err),
@@ -86,7 +86,7 @@ export const searchToolHandlers: Record<string, (args: unknown) => Promise<strin
     }
 
     if (!res.ok) {
-      console.error('[tavily] search_http_error', { requestId, status: res.status, statusText: res.statusText })
+      console.error('[耗时] Tavily 搜索 HTTP 错误 tavily.search_http_error', { requestId, status: res.status, statusText: res.statusText })
       return JSON.stringify({ error: `搜索失败：${res.status} ${res.statusText}` })
     }
 
@@ -94,7 +94,9 @@ export const searchToolHandlers: Record<string, (args: unknown) => Promise<strin
     const results = (data.results ?? []).map((r) => ({
       title: r.title,
       url: r.url,
-      snippet: r.content,
+      // 搜索摘要会直接进入下一轮上下文；限制单条长度，避免压缩后
+      // 连续多次搜索把刚恢复的上下文再次撑爆。
+      snippet: r.content.slice(0, 1000),
     }))
     return JSON.stringify({ results })
   },
@@ -114,11 +116,11 @@ export const searchToolHandlers: Record<string, (args: unknown) => Promise<strin
           body: JSON.stringify({ api_key: apiKey, urls: [url], format: 'markdown' }),
         })
         if (!r.ok && r.status >= 500) throw new Error(`extract upstream ${r.status}`)
-        console.info('[perf] tavily.extract', { durationMs: Date.now() - startedAt, status: r.status })
+        console.info('[耗时] Tavily 网页抓取完成 tavily.extract', { durationMs: Date.now() - startedAt, status: r.status })
         return r
       })
     } catch (err) {
-      console.error('[tavily] extract_failed', {
+      console.error('[耗时] Tavily 网页抓取失败 tavily.extract_failed', {
         requestId,
         durationMs: Date.now() - requestStartedAt,
         error: err instanceof Error ? err.message : String(err),
@@ -126,7 +128,7 @@ export const searchToolHandlers: Record<string, (args: unknown) => Promise<strin
       return JSON.stringify({ error: '网页抓取服务暂时不可用，请稍后重试。' })
     }
     if (!res.ok) {
-      console.error('[tavily] extract_http_error', { requestId, status: res.status, statusText: res.statusText })
+      console.error('[耗时] Tavily 网页抓取 HTTP 错误 tavily.extract_http_error', { requestId, status: res.status, statusText: res.statusText })
       return JSON.stringify({ error: `网页抓取失败：${res.status} ${res.statusText}` })
     }
     const data = (await res.json()) as { results?: Array<{ url?: string; raw_content?: string }> }

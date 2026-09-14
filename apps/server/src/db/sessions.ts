@@ -1,7 +1,7 @@
 import { and, eq, gt, sql } from 'drizzle-orm'
 import type OpenAI from 'openai'
 import { createInitialMessages } from '../agent/loop.js'
-import { planFold, summarizeFoldInBatches, type MessageRow } from '../agent/compaction.js'
+import { estimateTokens, planFold, summarizeFoldInBatches, type MessageRow } from '../agent/compaction.js'
 import { withRetry } from '../lib/retry.js'
 import { db } from './client.js'
 import { messages, sessions } from './schema.js'
@@ -247,6 +247,16 @@ export async function loadSessionMessagesForAgent(
   let summary = sessionRow?.summary ?? null
 
   const plan = planFold(tailRows)
+  console.info('[耗时] 历史记录加载完成 agent.history_loaded', {
+    sessionId,
+    hasSummary: Boolean(summary),
+    summarizedThroughId: sessionRow?.summarizedThroughId ?? null,
+    tailMessages: tailRows.length,
+    tailTokens: estimateTokens(tailRows.map((r) => r.message)),
+    willCompact: Boolean(plan),
+    foldMessages: plan?.toFold.length ?? 0,
+    keepMessages: plan?.keep.length ?? tailRows.length,
+  })
   if (plan && await canCompact()) {
     const startedAt = Date.now()
     let ok = false
@@ -269,7 +279,7 @@ export async function loadSessionMessagesForAgent(
       // 我们会在之后的调用中重试折叠。
       console.error('history compaction failed, sending full tail:', err)
     } finally {
-      console.info('[perf] agent.history_compaction', {
+      console.info('[耗时] 历史记录压缩完成 agent.history_compaction', {
         sessionId, durationMs: Date.now() - startedAt, ok, foldedMessages: plan.toFold.length,
       })
     }

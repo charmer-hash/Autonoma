@@ -9,6 +9,12 @@ import { users } from './schema.js'
 // 耗时相同 —— 否则响应耗时本身就会泄露哪些用户名是存在的。
 const dummyHash = hashPassword('dummy-password-for-timing')
 
+const usernameCache = new Map<string, { username: string; expiresAt: number }>()
+function cacheUsername(id: string, username: string): void {
+  if (usernameCache.size >= 256) usernameCache.delete(usernameCache.keys().next().value!)
+  usernameCache.set(id, { username, expiresAt: Date.now() + 5 * 60_000 })
+}
+
 export async function findUserIdByCredentials(
   username: string,
   password: string,
@@ -27,17 +33,47 @@ export async function findUserIdByCredentials(
   }
 
   const ok = await verifyPassword(password, rows[0].passwordHash)
+  if (ok) cacheUsername(rows[0].id, username)
   return ok ? rows[0].id : undefined
 }
 
 export async function getUsernameById(id: string): Promise<string | undefined> {
+  const cached = usernameCache.get(id)
+  if (cached && cached.expiresAt > Date.now()) return cached.username
+  usernameCache.delete(id)
   const rows = await withRetry(() =>
     db.select({ username: users.username }).from(users).where(eq(users.id, id)).limit(1),
   )
+  if (rows[0]) cacheUsername(id, rows[0].username)
   return rows[0]?.username
 }
 
+// 同一进程内按账号复用设置，并合并同时到达的首次读取。
+// 保存成功后替换缓存；读取失败不缓存，以便下一次请求重试。
+const settingsCache = new Map<string, Promise<AgentSettings>>()
+function cacheSettings(id: string, settings: Promise<AgentSettings>): void {
+  settingsCache.delete(id)
+  if (settingsCache.size >= 256) settingsCache.delete(settingsCache.keys().next().value!)
+  settingsCache.set(id, settings)
+}
+
 export async function getAgentSettings(id: string): Promise<AgentSettings> {
+  let pending = settingsCache.get(id)
+  if (!pending) {
+    pending = readAgentSettings(id)
+    cacheSettings(id, pending)
+  } else {
+    cacheSettings(id, pending)
+  }
+  try {
+    return { ...await pending }
+  } catch (err) {
+    if (settingsCache.get(id) === pending) settingsCache.delete(id)
+    throw err
+  }
+}
+
+async function readAgentSettings(id: string): Promise<AgentSettings> {
   const rows = await withRetry(() =>
     db
       .select({
@@ -86,4 +122,5 @@ export async function updateAgentSettings(id: string, settings: AgentSettings): 
       })
       .where(eq(users.id, id)),
   )
+  cacheSettings(id, Promise.resolve({ ...settings }))
 }
