@@ -1,111 +1,48 @@
-import { serve } from '@hono/node-server'
-import { getConnInfo } from '@hono/node-server/conninfo'
 import { Hono } from 'hono'
-import { cors } from 'hono/cors'
-import { logger } from 'hono/logger'
+import { configureApp } from './app-setup.js'
+import { uploadsRouter, ownsUploadKey } from './routes/uploads.js'
+import { authRouter } from './routes/auth.js'
+import { sessionsRouter } from './routes/sessions.js'
 import { streamSSE } from 'hono/streaming'
 import { Sandbox } from 'e2b'
 import {
   DEFAULT_AGENT_SETTINGS,
-  MAX_CUSTOM_INSTRUCTIONS_LENGTH,
-  MAX_MAX_TURNS,
-  MAX_SANDBOX_IDLE_MINUTES,
-  MAX_SESSION_NAME_LENGTH,
-  MIN_MAX_TURNS,
-  MIN_SANDBOX_IDLE_MINUTES,
   type AgentEvent,
-  type AgentSettings,
-  type AgentSettingsResponse,
-  type AuthMeResponse,
-  type ListSessionsResponse,
-  type LoginRequest,
-  type MultipartCompleteRequest,
-  type MultipartCreateRequest,
-  type MultipartCreateResponse,
-  type MultipartPart,
-  type MultipartPartUrlRequest,
-  type PresignedUpload,
-  type PresignedUploadRequest,
-  type PublicKeyResponse,
-  type RenameSessionRequest,
-  type SessionMessageCountResponse,
-  type UpdateAgentSettingsRequest,
-  type UpdateAgentSettingsResponse,
   type UploadedAttachment,
 } from '@autonoma/shared'
 import { resolveApproval } from './agent/approvals.js'
 import {
   attachSink,
-  clearSessionDeleting,
   cancelRun,
   detachSink,
   finishRun,
   isRunActive,
-  isRunInProgress,
   isRunCancelled,
   getRunSignal,
-  markSessionDeleting,
   publish,
   tryStartRun,
   waitForFinish,
 } from './agent/active-runs.js'
 import { runAgentLoop } from './agent/loop.js'
 import { MAX_VISION_IMAGE_BYTES, type PendingVisionImage } from './agent/tools/vision.js'
-import { authenticate, clearSession, createSession, getOwnerId, isAuthenticated, isProd, requireAuth } from './auth.js'
-import { decryptPassword, getPublicKeyBase64 } from './lib/login-crypto.js'
-import { checkLoginRateLimit, clearLoginAttempts, recordLoginFailure, resolveClientIp } from './lib/login-rate-limit.js'
+import { getOwnerId, requireAuth } from './auth.js'
 import { getLatestAttachmentByFilename, insertAttachment } from './db/attachments.js'
 import { getDailyCostUsd } from './db/usage.js'
-import { getArtifactById } from './db/artifacts.js'
-import { runMigrations } from './db/migrate.js'
 import {
   appendMessages,
-  deleteSession,
   getSandboxId,
-  getSessionMessageCount,
-  listSessions,
-  loadSessionMessages,
   loadSessionMessagesForAgent,
-  renameSession,
   resolveSessionAccess,
   setSandboxId,
 } from './db/sessions.js'
-import { getAgentSettings, getUsernameById, updateAgentSettings } from './db/users.js'
+import { getAgentSettings } from './db/users.js'
 import {
-  abortMultipartUpload,
-  completeMultipartUpload,
-  createMultipartUpload,
   getObjectStream,
   getPresignedDownloadUrl,
-  getPresignedPartUploadUrl,
-  getPresignedUploadUrl,
 } from './lib/storage.js'
 import { withRetry } from './lib/retry.js'
 
-// 目前还没有任何产品功能会调用这个上限（参见 @autonoma/upload）——
-// 这只是一个防滥用的宽松上限，并不是针对具体功能的真实限制。
-const MAX_UPLOAD_BYTES = 500 * 1024 * 1024
-
-// 每个用户每天（滚动 24 小时）最多花费多少美元——基于 OpenRouter 返回的
-// 真实 cost，见 agent/loop.ts 里 insertUsageEvent 的调用。
 const DAILY_COST_LIMIT_USD = Number(process.env.DAILY_COST_LIMIT_USD ?? 5)
-
-
-// `uploads/<owner>/<uuid>/<filename>` —— 按 owner 划分命名空间，
-// 这样一个登录用户就无法对另一个用户尚未完成的上传任务执行
-// complete/abort/append parts（下面的 ownsUploadKey 会做校验）。
-// 当鉴权关闭时（本地开发场景）ownerId 会是 undefined，这与
-// sessions/artifacts 里“无 owner”的约定一致，此时所有上传都会
-// 归并到共享的 'anon' 命名空间下——这没关系，因为这种模式下本来
-// 也不需要隔离。
-function buildUploadKey(ownerId: string | undefined, filename: string): string {
-  const safeName = filename.split(/[/\\]/).pop()?.trim() || 'file'
-  return `uploads/${ownerId ?? 'anon'}/${crypto.randomUUID()}/${safeName}`
-}
-
-function ownsUploadKey(key: string, ownerId: string | undefined): boolean {
-  return key.startsWith(`uploads/${ownerId ?? 'anon'}/`)
-}
 
 // 在 agent 循环开始之前，把每个附件从 R2 拉取并写入沙箱（是流式处理，
 // 不会在本进程里整体缓冲——参见 storage.ts 的 getObjectStream），
@@ -196,287 +133,16 @@ async function attachFilesToSandbox(
   return { note, visionImages }
 }
 
-// 生产环境下前后端通常不同源，必须显式配置允许的源——Hono 的 cors()
-// 在 origin 为 '*' 时会原样发送 `Access-Control-Allow-Origin: *`，
-// 浏览器规范规定这种字面量通配符跟 credentials:true 组合时，凭证请求
-// 会被直接拒绝暴露给前端 JS（不是漏洞，但表现为所有登录态请求诡异地
-// 全部失败，且没有任何明确报错指向"忘了配 CORS_ORIGIN"这个根因）。
-// 与其留一个生产环境下实际上是死代码的默认值，不如启动时就直接报错。
-const corsOrigin = process.env.CORS_ORIGIN?.split(',')
-if (isProd && !corsOrigin) {
-  throw new Error('CORS_ORIGIN 未设置——生产环境必须显式配置允许的跨域来源，而不是回退到会静默破坏所有登录态请求的通配符。')
-}
+export const app = new Hono()
 
-const app = new Hono()
-
-app.use('*', logger())
-
-app.use(
-  '*',
-  cors({
-    origin: corsOrigin ?? '*',
-    credentials: true,
-  }),
-)
-
-// CSRF 防护：登录态是 SameSite=None 的 cookie（跨域前后端所必需），单靠
-// CORS_ORIGIN 挡不住——CORS 只限制"跨站页面能不能读到响应"，不限制"请求
-// 能不能被发送、被服务端处理"。攻击者的页面完全可以用一个 Content-Type:
-// text/plain 的简单请求（不触发预检）直接把 JSON body 打到
-// /api/agent/run 之类的接口上，浏览器照样带上受害者的 cookie，Hono 的
-// c.req.json() 也不检查 Content-Type，一样能被解析——所以之前是真的没有
-// 防护。这里要求所有会改动状态的请求都必须带上一个自定义请求头：自定义
-// 请求头不在 CORS 的"简单请求"白名单里，浏览器会强制先发一次预检
-// （OPTIONS），预检能不能过是由上面的 CORS 配置（只认 CORS_ORIGIN 里列出
-// 的源）决定的——一个不在白名单里的源，从一开始就拿不到这个头，请求也就
-// 发不出去。GET/HEAD/OPTIONS 天然不改动状态，不需要这层校验；OPTIONS
-// 还必须放行，否则预检本身都过不去。
-app.use('*', async (c, next) => {
-  const method = c.req.method
-  if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
-    if (c.req.header('X-Requested-With') !== 'XMLHttpRequest') {
-      return c.json({ error: '缺少必要的请求头。' }, 403)
-    }
-  }
-  await next()
-})
+configureApp(app)
 
 app.get('/health', (c) => c.json({ ok: true }))
 
-// 前端登录前先拿这把公钥来加密密码——不缓存在别处，每次登录都现拿，
-// 这样服务端重启导致密钥轮换时，下一次登录自然会用到新公钥，不需要
-// 额外的失效/刷新机制。
-app.get('/api/auth/public-key', (c) => {
-  return c.json({ publicKey: getPublicKeyBase64() } satisfies PublicKeyResponse)
-})
+app.route('/api/auth', authRouter)
 
-app.post('/api/auth/login', async (c) => {
-  // 按来源 IP 限流——挡住对着这个接口狂刷用户名/密码组合的暴力破解
-  // 尝试（见 lib/login-rate-limit.ts）。被锁定时直接拒绝、不再往下跑
-  // RSA 解密和 scrypt 比对，省下无意义的计算。
-  const ip = resolveClientIp(c.req.header('x-forwarded-for'), getConnInfo(c).remote.address)
-  const rate = checkLoginRateLimit(ip)
-  if (!rate.allowed) {
-    return c.json({ error: `登录尝试过于频繁，请 ${Math.ceil(rate.retryAfterMs / 60_000)} 分钟后重试。` }, 429)
-  }
+app.route('/api/sessions', sessionsRouter)
 
-  const body = await c.req
-    .json<Partial<LoginRequest>>()
-    .catch(() => ({}) as Partial<LoginRequest>)
-
-  // 字段名叫 password，但 body.password 这时候还是 RSA 密文——先解密出
-  // 明文，再送去跟数据库里的 scrypt 哈希比对（authenticate 内部做的事）。
-  let decryptedPassword: string
-  try {
-    decryptedPassword = decryptPassword(body.password)
-  } catch (err) {
-    recordLoginFailure(ip)
-    return c.json({ error: err instanceof Error ? err.message : '登录请求格式不正确。' }, 400)
-  }
-
-  const ownerId = await authenticate(body.username, decryptedPassword)
-  if (!ownerId) {
-    recordLoginFailure(ip)
-    return c.json({ error: '用户名或密码错误' }, 401)
-  }
-  clearLoginAttempts(ip)
-  await createSession(c, ownerId)
-  return c.json({ ok: true })
-})
-
-app.post('/api/auth/logout', (c) => {
-  clearSession(c)
-  return c.json({ ok: true })
-})
-
-app.get('/api/auth/me', async (c) => {
-  const authenticated = await isAuthenticated(c)
-  if (!authenticated) return c.json({ authenticated } satisfies AuthMeResponse)
-  const ownerId = await getOwnerId(c)
-  const username = ownerId ? await getUsernameById(ownerId) : undefined
-  return c.json({ authenticated, username } satisfies AuthMeResponse)
-})
-
-app.get('/api/settings', requireAuth, async (c) => {
-  const ownerId = await getOwnerId(c)
-  const settings = ownerId ? await getAgentSettings(ownerId) : DEFAULT_AGENT_SETTINGS
-  return c.json(settings satisfies AgentSettingsResponse)
-})
-
-app.put('/api/settings', requireAuth, async (c) => {
-  const body = await c.req
-    .json<Partial<UpdateAgentSettingsRequest>>()
-    .catch(() => ({}) as Partial<UpdateAgentSettingsRequest>)
-
-  const customInstructions = typeof body.customInstructions === 'string' ? body.customInstructions : ''
-  if (customInstructions.length > MAX_CUSTOM_INSTRUCTIONS_LENGTH) {
-    return c.json({ error: `自定义指令过长，最多 ${MAX_CUSTOM_INSTRUCTIONS_LENGTH} 个字符。` }, 400)
-  }
-  if (body.approvalMode !== 'auto' && body.approvalMode !== 'confirm') {
-    return c.json({ error: '审批模式取值不合法。' }, 400)
-  }
-  const maxTurns = Number(body.maxTurns)
-  if (!Number.isInteger(maxTurns) || maxTurns < MIN_MAX_TURNS || maxTurns > MAX_MAX_TURNS) {
-    return c.json({ error: `单轮最大步数必须在 ${MIN_MAX_TURNS}-${MAX_MAX_TURNS} 之间。` }, 400)
-  }
-  if (body.modelChoice !== 'default' && body.modelChoice !== 'grok') {
-    return c.json({ error: '模型选择取值不合法。' }, 400)
-  }
-  const sandboxIdleMinutes = Number(body.sandboxIdleMinutes)
-  if (
-    !Number.isInteger(sandboxIdleMinutes) ||
-    sandboxIdleMinutes < MIN_SANDBOX_IDLE_MINUTES ||
-    sandboxIdleMinutes > MAX_SANDBOX_IDLE_MINUTES
-  ) {
-    return c.json({ error: `沙箱空闲保留时长必须在 ${MIN_SANDBOX_IDLE_MINUTES}-${MAX_SANDBOX_IDLE_MINUTES} 分钟之间。` }, 400)
-  }
-
-  const settings: AgentSettings = {
-    customInstructions: customInstructions.trim(),
-    approvalMode: body.approvalMode,
-    maxTurns,
-    codeExecEnabled: Boolean(body.codeExecEnabled),
-    webSearchEnabled: Boolean(body.webSearchEnabled),
-    visionEnabled: Boolean(body.visionEnabled),
-    modelChoice: body.modelChoice,
-    conciseReplies: Boolean(body.conciseReplies),
-    sandboxIdleMinutes,
-  }
-
-  const ownerId = await getOwnerId(c)
-  if (!ownerId) {
-    // 鉴权关闭时没有账号可关联——不报错，但也没法持久化，前端会据
-    // persisted: false 提示用户这条设置不会被保存。
-    return c.json({ ok: true, persisted: false } satisfies UpdateAgentSettingsResponse)
-  }
-  await updateAgentSettings(ownerId, settings)
-  return c.json({ ok: true, persisted: true } satisfies UpdateAgentSettingsResponse)
-})
-
-// limit/offset/search 都是可选的——不传就是原来的行为（前 50 条，
-// 不过滤）。limit 上限 100，避免客户端传一个离谱的大数把整表拉回来。
-app.get('/api/sessions', requireAuth, async (c) => {
-  const ownerId = await getOwnerId(c)
-  const rawLimit = Number(c.req.query('limit'))
-  const rawOffset = Number(c.req.query('offset'))
-  const limit = Number.isInteger(rawLimit) && rawLimit > 0 && rawLimit <= 100 ? rawLimit : 50
-  const offset = Number.isInteger(rawOffset) && rawOffset >= 0 ? rawOffset : 0
-  const search = c.req.query('search')
-  const { sessions, hasMore } = await listSessions(ownerId, { limit, offset, search })
-  return c.json({
-    sessions: sessions.map((s) => ({ ...s, updatedAt: s.updatedAt.toISOString() })),
-    hasMore,
-  } satisfies ListSessionsResponse)
-})
-
-app.get('/api/sessions/:id', requireAuth, async (c) => {
-  const sessionId = c.req.param('id')
-  if (!sessionId) return c.json({ error: 'Missing session id.' }, 400)
-  const ownerId = await getOwnerId(c)
-  const access = await resolveSessionAccess(sessionId, ownerId)
-  if (access === 'forbidden') return c.json({ error: '无权访问该会话。' }, 403)
-  if (access === 'not_found') return c.json({ error: '会话不存在。' }, 404)
-  const messages = await loadSessionMessages(sessionId, ownerId)
-  return c.json({ messages })
-})
-
-// 只返回消息数，不带正文——consoleStore 在提交新任务前用它记一个"提交
-// 前基准值"（见 apps/web/src/store/consoleStore.ts 的 run()），只在 SSE
-// 掉线后走轮询兜底时才用得上，不值得为此拉一遍完整的消息历史。
-app.get('/api/sessions/:id/messages/count', requireAuth, async (c) => {
-  const sessionId = c.req.param('id')
-  if (!sessionId) return c.json({ error: 'Missing session id.' }, 400)
-  const ownerId = await getOwnerId(c)
-  const access = await resolveSessionAccess(sessionId, ownerId)
-  if (access === 'forbidden') return c.json({ error: '无权访问该会话。' }, 403)
-  if (access === 'not_found') return c.json({ error: '会话不存在。' }, 404)
-  const count = await getSessionMessageCount(sessionId)
-  return c.json({ count } satisfies SessionMessageCountResponse)
-})
-
-// name 传空字符串（trim 之后）表示清除自定义标题，落回显示 preview——
-// 不是把空字符串当成一个"合法但空"的标题存起来。
-app.patch('/api/sessions/:id', requireAuth, async (c) => {
-  const sessionId = c.req.param('id')
-  if (!sessionId) return c.json({ error: 'Missing session id.' }, 400)
-  const ownerId = await getOwnerId(c)
-  const access = await resolveSessionAccess(sessionId, ownerId)
-  if (access === 'forbidden') return c.json({ error: '无权访问该会话。' }, 403)
-  if (access === 'not_found') return c.json({ error: '会话不存在。' }, 404)
-
-  const body = await c.req.json<Partial<RenameSessionRequest>>().catch(() => ({}) as Partial<RenameSessionRequest>)
-  const trimmed = typeof body.name === 'string' ? body.name.trim() : ''
-  if (trimmed.length > MAX_SESSION_NAME_LENGTH) {
-    return c.json({ error: `标题过长，最多 ${MAX_SESSION_NAME_LENGTH} 个字符。` }, 400)
-  }
-  await renameSession(sessionId, trimmed || null)
-  return c.json({ ok: true })
-})
-
-app.delete('/api/sessions/:id', requireAuth, async (c) => {
-  const sessionId = c.req.param('id')
-  if (!sessionId) return c.json({ error: 'Missing session id.' }, 400)
-  const ownerId = await getOwnerId(c)
-  const access = await resolveSessionAccess(sessionId, ownerId)
-  if (access === 'forbidden') return c.json({ error: '无权访问该会话。' }, 403)
-  if (access === 'not_found') return c.json({ error: '会话不存在。' }, 404)
-  // 另一个标签页/设备可能正在这个会话里跑一轮对话——真删掉会导致那一轮
-  // 跑完后落库时因为外键约束失败，静默丢掉这条回复。用 isRunInProgress
-  // 而不是 isRunActive：后者对刚跑完、还在宽限期内等重连补读的记录也
-  // 返回 true，会话正常应该能删，不该被最近一次已完成的对话挡住。
-  if (isRunInProgress(sessionId)) {
-    return c.json({ error: '该会话有一条消息正在处理中，请稍候再试。' }, 409)
-  }
-  // 紧接着 isRunInProgress 检查、不隔任何 await 地标记"正在删除"——堵住
-  // 上面检查和下面真正的数据库删除之间那段 await 期间可能出现的竞态：
-  // 另一个请求在这段时间里调用 tryStartRun（纯同步操作）抢先开始新一轮，
-  // 见 active-runs.ts 里 markSessionDeleting 的注释。
-  markSessionDeleting(sessionId)
-  try {
-    await deleteSession(sessionId)
-  } finally {
-    clearSessionDeleting(sessionId)
-  }
-  return c.json({ ok: true })
-})
-
-app.get('/api/artifacts/:id', requireAuth, async (c) => {
-  const id = c.req.param('id')
-  if (!id) return c.json({ error: 'Missing artifact id.' }, 400)
-  const artifact = await getArtifactById(id)
-  if (!artifact) return c.json({ error: '文件不存在。' }, 404)
-
-  const ownerId = await getOwnerId(c)
-  const access = await resolveSessionAccess(artifact.sessionId, ownerId)
-  if (access === 'forbidden') return c.json({ error: '无权访问该文件。' }, 403)
-  if (access === 'not_found') return c.json({ error: '文件不存在。' }, 404)
-
-  const disposition = artifact.mimeType.startsWith('image/') || artifact.mimeType === 'application/pdf' ? 'inline' : 'attachment'
-  const url = await getPresignedDownloadUrl(artifact.r2Key, {
-    filename: artifact.name,
-    mimeType: artifact.mimeType,
-    disposition,
-  })
-
-  // ?raw=1 会直接返回预签名的 R2 URL 本身，而不是做重定向——
-  // 这是给那些用自己的 HTTP 客户端读取文件字节、而不是走浏览器
-  // 导航的场景准备的（比如 react-pdf/pdf.js、papaparse，以及
-  // Microsoft Office 在线预览的服务端 fetch）。这些调用方都不会
-  // 带上我们的会话 cookie，所以没法直接访问这个需要鉴权的路由；
-  // 它们需要提前拿到这个已经授权好的原始 URL。普通的
-  // <img>/<video>/<a href> 用法则不受影响，仍然走重定向。
-  if (c.req.query('raw') === '1') {
-    return c.json({ url, name: artifact.name, mimeType: artifact.mimeType })
-  }
-  return c.redirect(url, 302)
-})
-
-// 给控制台里展示用户上传图片的缩略图用——跟 GET /api/artifacts/:id
-// 是同一个鉴权 + 预签名重定向模式，区别只是这里按 (sessionId, 文件名)
-// 查，而不是按一个客户端已知的 id 查（前端历史消息里从来就没有过
-// attachment 的 id，只有从持久化的提示文字里解析出来的文件名——见
-// apps/web/src/lib/blocks.ts）。同一文件名在这个 session 里上传过
-// 多次时，取最新的一份。
 app.get('/api/sessions/:sessionId/attachments/:filename', requireAuth, async (c) => {
   const sessionId = c.req.param('sessionId')
   const filename = c.req.param('filename')
@@ -502,84 +168,7 @@ app.get('/api/sessions/:sessionId/attachments/:filename', requireAuth, async (c)
 // 单次直传 R2 的上传方式——与 @autonoma/upload 的
 // createR2UploadAdapter 配套使用。这里只签发一个预签名的 PUT URL，
 // 文件字节本身不会经过这台服务器。
-app.post('/api/uploads', requireAuth, async (c) => {
-  const body = await c.req.json<Partial<PresignedUploadRequest>>().catch(() => ({}) as Partial<PresignedUploadRequest>)
-  const { filename, mimeType, size } = body
-  if (!filename || !mimeType || typeof size !== 'number') {
-    return c.json({ error: '缺少 filename / mimeType / size。' }, 400)
-  }
-  if (size > MAX_UPLOAD_BYTES) {
-    return c.json({ error: `文件过大，最大允许 ${MAX_UPLOAD_BYTES / 1024 / 1024}MB。` }, 400)
-  }
-
-  const ownerId = await getOwnerId(c)
-  const key = buildUploadKey(ownerId, filename)
-  const url = await getPresignedUploadUrl(key, mimeType)
-  const response: PresignedUpload = { url, key }
-  return c.json(response)
-})
-
-// 分片直传 R2 的上传方式（用于大文件）——与 @autonoma/upload 的
-// createR2MultipartUploadAdapter 配套使用。四个接口环绕着浏览器
-// 对各分片的直传 PUT 请求：create（创建）、part-url（每个分片
-// 调用一次）、complete（完成）、以及 abort（取消/失败时的清理）。
-app.post('/api/uploads/multipart/create', requireAuth, async (c) => {
-  const body = await c.req.json<Partial<MultipartCreateRequest>>().catch(() => ({}) as Partial<MultipartCreateRequest>)
-  const { filename, mimeType, size } = body
-  if (!filename || !mimeType || typeof size !== 'number') {
-    return c.json({ error: '缺少 filename / mimeType / size。' }, 400)
-  }
-  if (size > MAX_UPLOAD_BYTES) {
-    return c.json({ error: `文件过大，最大允许 ${MAX_UPLOAD_BYTES / 1024 / 1024}MB。` }, 400)
-  }
-
-  const ownerId = await getOwnerId(c)
-  const key = buildUploadKey(ownerId, filename)
-  const uploadId = await createMultipartUpload(key, mimeType)
-  const response: MultipartCreateResponse = { key, uploadId }
-  return c.json(response)
-})
-
-app.post('/api/uploads/multipart/part-url', requireAuth, async (c) => {
-  const body = await c.req
-    .json<Partial<MultipartPartUrlRequest>>()
-    .catch(() => ({}) as Partial<MultipartPartUrlRequest>)
-  const { key, uploadId, partNumber } = body
-  if (!key || !uploadId || typeof partNumber !== 'number') {
-    return c.json({ error: '缺少 key / uploadId / partNumber。' }, 400)
-  }
-  const ownerId = await getOwnerId(c)
-  if (!ownsUploadKey(key, ownerId)) return c.json({ error: '无权访问该上传任务。' }, 403)
-
-  const url = await getPresignedPartUploadUrl(key, uploadId, partNumber)
-  return c.json({ url })
-})
-
-app.post('/api/uploads/multipart/complete', requireAuth, async (c) => {
-  const body = await c.req
-    .json<Partial<MultipartCompleteRequest>>()
-    .catch(() => ({}) as Partial<MultipartCompleteRequest>)
-  const { key, uploadId, parts } = body
-  if (!key || !uploadId || !Array.isArray(parts) || parts.length === 0) {
-    return c.json({ error: '缺少 key / uploadId / parts。' }, 400)
-  }
-  const ownerId = await getOwnerId(c)
-  if (!ownsUploadKey(key, ownerId)) return c.json({ error: '无权访问该上传任务。' }, 403)
-
-  await completeMultipartUpload(key, uploadId, parts as MultipartPart[])
-  return c.json({ ok: true })
-})
-
-app.post('/api/uploads/multipart/abort', requireAuth, async (c) => {
-  const body = await c.req.json<{ key?: string; uploadId?: string }>().catch(() => ({}) as { key?: string; uploadId?: string })
-  const { key, uploadId } = body
-  if (!key || !uploadId) return c.json({ error: '缺少 key / uploadId。' }, 400)
-  const ownerId = await getOwnerId(c)
-  if (!ownsUploadKey(key, ownerId)) return c.json({ error: '无权访问该上传任务。' }, 403)
-
-  await abortMultipartUpload(key, uploadId)
-  return c.json({ ok: true })
-})
+app.route('/api/uploads', uploadsRouter)
 
 // 审批模式（AgentSettings.approvalMode === 'confirm'）下，run_command/write_file/
 // export_artifact 执行前会先在 SSE 里发出 approval_required 事件并挂起等待——
@@ -843,12 +432,4 @@ app.get('/api/agent/run/:sessionId/reconnect', requireAuth, async (c) => {
 
     await Promise.race([waitForFinish(sessionId), abortPromise])
   })
-})
-
-await runMigrations()
-
-const port = Number(process.env.PORT ?? 8787)
-
-serve({ fetch: app.fetch, port }, (info) => {
-  console.log(`Server listening on http://localhost:${info.port}`)
 })
