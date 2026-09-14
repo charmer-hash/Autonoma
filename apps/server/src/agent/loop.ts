@@ -7,6 +7,7 @@ import { buildVisionMessage, type PendingVisionImage } from './tools/vision.js'
 import { insertUsageEvent } from '../db/usage.js'
 import { DEFAULT_AGENT_SETTINGS, type AgentSettings } from '@autonoma/shared'
 import type { AgentEvent } from '@autonoma/shared'
+import { compactMessagesForModel, estimateRequestTokens } from './compaction.js'
 
 // OpenRouter 在流式响应的最后一个 chunk 里带上真实花费——`cost` 是它
 // 自己扩展出来的字段，标准 openai SDK 的 CompletionUsage 类型里没有，
@@ -14,6 +15,11 @@ import type { AgentEvent } from '@autonoma/shared'
 type UsageWithCost = OpenAI.CompletionUsage & { cost?: number }
 
 const MAX_STREAM_RETRIES = 2
+const MODEL_CONTEXT_TOKENS = Number(process.env.AGENT_CONTEXT_WINDOW_TOKENS ?? 32768)
+const MODEL_OUTPUT_RESERVE_TOKENS = Number(process.env.AGENT_OUTPUT_RESERVE_TOKENS ?? 4096)
+const CONTEXT_SAFETY_MARGIN_TOKENS = Number(process.env.AGENT_CONTEXT_SAFETY_MARGIN_TOKENS ?? 1000)
+const CONTEXT_HARD_LIMIT = MODEL_CONTEXT_TOKENS - MODEL_OUTPUT_RESERVE_TOKENS - CONTEXT_SAFETY_MARGIN_TOKENS
+const CONTEXT_SOFT_LIMIT = Math.floor(CONTEXT_HARD_LIMIT * 0.8)
 
 // 审批模式（settings.approvalMode === 'confirm'）下，只有这几个会改动
 // 沙箱状态/产出交付物的工具需要用户先点确认——web_search/write_document/
@@ -84,6 +90,11 @@ export async function* runAgentLoop(
   isCancelled: () => boolean = () => false,
   signal?: AbortSignal,
 ): AsyncGenerator<AgentEvent> {
+  // `messages` is the complete history that the caller persists. Keep a
+  // separate mutable context so mid-run folding never removes raw history
+  // from the persisted conversation.
+  const modelMessages = messages.slice()
+
   // 排队等待展示给模型的图片，*仅*用于下一次 LLM 调用
   // （参见 tools/vision.ts 的 buildVisionMessage）——这里先用本轮
   // 刚上传的附件做初始填充，之后随着循环运行会被 view_image
@@ -130,6 +141,65 @@ export async function* runAgentLoop(
   try {
     for (let turn = 0; turn < settings.maxTurns; turn++) {
       if (isCancelled()) return
+      const visionMessages = buildVisionMessage(pendingVisionImages)
+      const modelForThisCall = pendingVisionImages.length > 0 ? VISION_MODEL : resolveModel(settings.modelChoice)
+      const requestMessages = () => [
+        modelMessages[0],
+        dateNote,
+        ...(toolsNote ? [toolsNote] : []),
+        ...(preferenceNote ? [preferenceNote] : []),
+        ...modelMessages.slice(1),
+        ...visionMessages,
+      ]
+      let requestTokens = estimateRequestTokens(requestMessages(), tools)
+      const beforeTokens = requestTokens
+      let compacted = false
+      try {
+        const nonHistoryMessages = [
+          modelMessages[0],
+          dateNote,
+          ...(toolsNote ? [toolsNote] : []),
+          ...(preferenceNote ? [preferenceNote] : []),
+          ...visionMessages,
+        ]
+        const nonHistoryTokens = estimateRequestTokens(nonHistoryMessages, tools)
+        const historyTriggerTokens = Math.max(1, CONTEXT_SOFT_LIMIT - nonHistoryTokens)
+        while (requestTokens > CONTEXT_SOFT_LIMIT) {
+          const folded = await compactMessagesForModel(modelMessages, {
+            triggerTokens: historyTriggerTokens,
+          })
+          if (!folded) break
+          compacted = true
+          requestTokens = estimateRequestTokens(requestMessages(), tools)
+        }
+        if (compacted) {
+          console.info('[agent] in-run history compaction', {
+            sessionId,
+            turn,
+            beforeTokens,
+            afterTokens: requestTokens,
+            hardLimit: CONTEXT_HARD_LIMIT,
+          })
+        }
+      } catch (err) {
+        // Folding is a context optimization; a failed summarizer must not
+        // discard the complete in-flight history or abort the user task.
+        console.error('in-run history compaction failed:', err)
+      }
+      if (requestTokens > CONTEXT_HARD_LIMIT) {
+        console.error('[agent] context hard limit exceeded', {
+          sessionId,
+          turn,
+          requestTokens,
+          hardLimit: CONTEXT_HARD_LIMIT,
+          compacted,
+        })
+        yield {
+          type: 'error',
+          message: '当前任务的上下文过长，即使压缩后仍超过模型限制。请拆分任务后继续。',
+        }
+        return
+      }
       let content = ''
       const toolCalls: OpenAI.Chat.ChatCompletionMessageFunctionToolCall[] = []
       let finishReason: string | null = null
@@ -139,9 +209,6 @@ export async function* runAgentLoop(
       // payload，绝不写入 `messages` 本身。模型的选择也遵循同样的
       // 逻辑，让每个纯文本轮次都走便宜的 MODEL，只有真正需要视觉
       // 能力的那一轮才会用支持视觉的模型。
-      const visionMessages = buildVisionMessage(pendingVisionImages)
-      const modelForThisCall = pendingVisionImages.length > 0 ? VISION_MODEL : resolveModel(settings.modelChoice)
-
       // 这里的重试只会从头干净地重新执行一遍 create()+消费流的过程——
       // 只要本轮还没有任何内容送达用户（`yieldedAnything` 为 false），
       // 这样做就是安全的。一旦已经 yield 过任何 text_delta/tool_call，
@@ -154,14 +221,7 @@ export async function* runAgentLoop(
         try {
           const chunkStream = await client.chat.completions.create({
             model: modelForThisCall,
-            messages: [
-              messages[0],
-              dateNote,
-              ...(toolsNote ? [toolsNote] : []),
-              ...(preferenceNote ? [preferenceNote] : []),
-              ...messages.slice(1),
-              ...visionMessages,
-            ],
+            messages: requestMessages(),
             tools,
             stream: true,
             stream_options: { include_usage: true },
@@ -248,6 +308,7 @@ export async function* runAgentLoop(
 
       if (finishReason === 'tool_calls' && toolCalls.length > 0) {
         messages.push({ role: 'assistant', content: content || null, tool_calls: toolCalls })
+        modelMessages.push({ role: 'assistant', content: content || null, tool_calls: toolCalls })
 
         // 同一轮里模型可能一次性发出多个工具调用——它们是并列决定的
         // （模型在下一轮之前看不到任何一个的结果），但并非全都能安全地
@@ -293,6 +354,7 @@ export async function* runAgentLoop(
               const result = JSON.stringify({ ok: false, error: '用户拒绝执行该操作，请调整方案或询问用户下一步怎么做。' })
               yield { type: 'tool_result', id: toolCall.id, name: toolCall.function.name, result }
               messages.push({ role: 'tool', tool_call_id: toolCall.id, content: result })
+              modelMessages.push({ role: 'tool', tool_call_id: toolCall.id, content: result })
               continue
             }
           }
@@ -363,6 +425,7 @@ export async function* runAgentLoop(
             }
 
             messages.push({ role: 'tool', tool_call_id: toolCall.id, content: result })
+            modelMessages.push({ role: 'tool', tool_call_id: toolCall.id, content: result })
           }
         }
         continue
