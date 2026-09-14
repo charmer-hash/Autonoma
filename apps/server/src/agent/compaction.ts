@@ -13,7 +13,6 @@ const SUMMARY_SAFETY_MARGIN_TOKENS = Number(process.env.COMPACTION_SUMMARY_SAFET
 const SUMMARY_INPUT_LIMIT = SUMMARY_CONTEXT_TOKENS - SUMMARY_OUTPUT_RESERVE_TOKENS - SUMMARY_SAFETY_MARGIN_TOKENS
 const MODEL_TOOL_RESULT_MAX_CHARS = Number(process.env.AGENT_TOOL_RESULT_MAX_CHARS ?? 12000)
 const SUMMARY_TOOL_RESULT_MAX_CHARS = Number(process.env.COMPACTION_TOOL_RESULT_MAX_CHARS ?? 8000)
-const COMPACTION_RESPONSE_LOG_CHARS = Number(process.env.AGENT_COMPACTION_RESPONSE_LOG_CHARS ?? 4000)
 
 // 字符数换算 token 数的系数。这里的内容混合了中文文本
 // （比经典的英文 ~4 字符/token 经验值更密）和 JSON 格式的工具
@@ -206,13 +205,6 @@ export async function summarizeFold(
   }
 
   const startedAt = Date.now()
-  console.info('[耗时] 压缩模型请求开始 agent.compaction_model_request', {
-    model: COMPACTION_MODEL,
-    messageCount: 2,
-    inputTokens: requestTokens,
-    inputBytes: Buffer.byteLength(userContent, 'utf8'),
-    foldedMessageCount: toFold.length,
-  })
   try {
     const res = await client.chat.completions.create({
       model: COMPACTION_MODEL,
@@ -229,12 +221,6 @@ export async function summarizeFold(
       promptTokens: res.usage?.prompt_tokens,
       completionTokens: res.usage?.completion_tokens,
       responseChars: res.choices[0]?.message?.content?.length ?? 0,
-      response: (() => {
-        const response = res.choices[0]?.message?.content ?? ''
-        return response.length > COMPACTION_RESPONSE_LOG_CHARS
-          ? `${response.slice(0, COMPACTION_RESPONSE_LOG_CHARS)}...(已截断，完整长度 ${response.length} 字符)`
-          : response
-      })(),
     })
     const result = res.choices[0]?.message?.content?.trim() || existingSummary || ''
     // 额外按估算值截断，防止上游忽略 max_tokens 或累计摘要失控。
@@ -257,11 +243,6 @@ export async function summarizeFoldInBatches(
   const startedAt = Date.now()
   const totalRequestTokens = estimateSummaryRequestTokens(existingSummary, toFold)
   if (totalRequestTokens <= SUMMARY_INPUT_LIMIT) {
-    console.info('[耗时] 历史压缩开始 agent.compaction_start', {
-      batchCount: 1,
-      foldedMessageCount: toFold.length,
-      inputTokens: totalRequestTokens,
-    })
     const summary = await summarizeFold(existingSummary, toFold)
     console.info('[耗时] 历史压缩完成 agent.compaction_complete', {
       batchCount: 1,
@@ -272,11 +253,6 @@ export async function summarizeFoldInBatches(
   }
 
   const batches = splitSummaryBatches(existingSummary, toFold)
-  console.info('[耗时] 历史压缩开始 agent.compaction_start', {
-    batchCount: batches.length,
-    foldedMessageCount: toFold.length,
-    inputTokens: totalRequestTokens,
-  })
   let summary = existingSummary
   for (const batch of batches) {
     if (estimateSummaryRequestTokens(summary, batch) > SUMMARY_INPUT_LIMIT) {
