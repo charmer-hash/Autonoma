@@ -556,7 +556,17 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => {
     stop: async () => {
       const sessionId = get().sessionId
       if (!sessionId || !get().running) return
-      try { await stopAgent(sessionId) } catch (err) { appendError(err instanceof Error ? err.message : String(err)) }
+      // 先更新本地状态，让停止按钮和工具卡片立即反馈；服务端停止请求
+      // 仍在后台发送，避免网络延迟把 UI 卡在“运行中”。推进代次后，
+      // 原 run 的后续 SSE 事件也不会再写回当前 store。
+      const stopEpoch = ++runEpoch
+      markCancelled()
+      set({ running: false })
+      try {
+        await stopAgent(sessionId)
+      } catch (err) {
+        if (stopEpoch === runEpoch) appendError(err instanceof Error ? err.message : String(err))
+      }
     },
 
     respondToApproval: async (toolCallId, approved) => {

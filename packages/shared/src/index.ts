@@ -132,7 +132,7 @@ export type AgentSettings = {
 export const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   customInstructions: '',
   approvalMode: 'auto',
-  maxTurns: 30,
+  maxTurns: 15,
   codeExecEnabled: true,
   webSearchEnabled: true,
   visionEnabled: true,

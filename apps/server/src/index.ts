@@ -362,9 +362,6 @@ app.post('/api/agent/run', requireAuth, async (c) => {
 
     try {
       const [settings, messages] = await Promise.all([settingsPromise, messagesPromise])
-      console.info('[耗时] 准备阶段完成 agent.preparation_complete', {
-        requestId, sessionId, runId, isNewSession, durationMs: Date.now() - requestStartedAt,
-      })
       const sandboxIdleTtlMs = settings.sandboxIdleMinutes * 60_000
 
       async function sendError(message: string) {
