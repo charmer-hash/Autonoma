@@ -5,7 +5,7 @@ import { client, COMPACTION_MODEL } from './client.js'
 // 因为压缩的激进程度是那种需要观察真实使用情况后再调整的东西。
 const FOLD_TRIGGER_TOKENS = Number(process.env.COMPACTION_TRIGGER_TOKENS ?? 4000)
 const KEEP_TAIL_TOKENS = Number(process.env.COMPACTION_KEEP_TOKENS ?? 2000)
-const SUMMARY_MAX_TOKENS = Number(process.env.COMPACTION_MAX_TOKENS ?? 4000)
+const SUMMARY_MAX_TOKENS = Number(process.env.COMPACTION_MAX_TOKENS ?? 800)
 const SUMMARY_BATCH_TOKENS = Number(process.env.COMPACTION_SUMMARY_BATCH_TOKENS ?? 12000)
 const SUMMARY_CONTEXT_TOKENS = Number(process.env.COMPACTION_SUMMARY_CONTEXT_TOKENS ?? 32768)
 const SUMMARY_OUTPUT_RESERVE_TOKENS = Number(process.env.COMPACTION_SUMMARY_OUTPUT_RESERVE_TOKENS ?? 1000)

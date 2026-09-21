@@ -141,6 +141,7 @@ export async function* runAgentLoop(
 
   try {
     let webSearchRounds = 0
+    let runtimeCompactionUsed = false
     for (let turn = 0; turn < settings.maxTurns; turn++) {
       if (isCancelled()) return
       const visionMessages = buildVisionMessage(pendingVisionImages)
@@ -175,13 +176,14 @@ export async function* runAgentLoop(
           hardLimit: CONTEXT_HARD_LIMIT,
           modelMessages: modelMessages.length,
         })
-        while (requestTokens > CONTEXT_SOFT_LIMIT) {
+        while (requestTokens > CONTEXT_SOFT_LIMIT && !runtimeCompactionUsed) {
           const tokensBeforeFold = requestTokens
           const folded = await compactMessagesForModel(modelMessages, {
             triggerTokens: historyTriggerTokens,
             keepTokens: Math.max(1000, Math.min(2000, Math.floor(historyTriggerTokens * 0.5))),
           })
           if (!folded) break
+          runtimeCompactionUsed = true
           compacted = true
           requestTokens = estimateRequestTokens(requestMessages(), tools)
           // 摘要没有令请求变短时停止，避免重复调用压缩模型造成请求卡死。

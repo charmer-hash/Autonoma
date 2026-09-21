@@ -12,7 +12,7 @@ export const MODEL = process.env.OPENROUTER_MODEL ?? 'deepseek/deepseek-v4-pro'
 
 // 历史压缩只需要把旧对话整理成简短摘要，不需要占用正式回答模型。
 // 单独配置可以降低首 token 延迟和摘要成本。
-export const COMPACTION_MODEL = process.env.OPENROUTER_COMPACTION_MODEL ?? 'deepseek/deepseek-v3.2'
+export const COMPACTION_MODEL = process.env.OPENROUTER_COMPACTION_MODEL ?? 'qwen/qwen3-14b'
 
 // MODEL 只支持文本（DeepSeek 在 OpenRouter 上不支持视觉输入）——
 // 任何需要让模型看图片的 LLM 调用都会改用这个模型，
