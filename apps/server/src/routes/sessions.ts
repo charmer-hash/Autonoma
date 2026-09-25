@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { requireAuth, getOwnerId } from '../auth.js'
 import { MAX_SESSION_NAME_LENGTH, type ListSessionsResponse, type RenameSessionRequest, type SessionMessageCountResponse } from '@autonoma/shared'
-import { listSessions, loadSessionMessages, getSessionMessageCount, resolveSessionAccess, renameSession, deleteSession } from '../db/sessions.js'
+import { listSessions, loadSessionMessages, getSessionMessageCountForOwner, resolveSessionAccess, renameSession, deleteSession } from '../db/sessions.js'
 import { isRunInProgress, markSessionDeleting, clearSessionDeleting } from '../agent/active-runs.js'
 
 export const sessionsRouter = new Hono()
@@ -23,6 +23,14 @@ async function access(c: any, id: string, ownerId: string) {
 }
 
 sessionsRouter.get('/:id', requireAuth, async (c) => { const id=c.req.param('id'); if(!id)return c.json({error:'Missing session id.'},400); const owner=await getOwnerId(c); const e=await access(c,id!,owner!); if(e)return e; return c.json({messages: await loadSessionMessages(id!,owner!)}) })
-sessionsRouter.get('/:id/messages/count', requireAuth, async (c) => { const id=c.req.param('id'); if(!id)return c.json({error:'Missing session id.'},400); const owner=await getOwnerId(c); const e=await access(c,id!,owner!); if(e)return e; return c.json({count: await getSessionMessageCount(id!)} satisfies SessionMessageCountResponse) })
+sessionsRouter.get('/:id/messages/count', requireAuth, async (c) => {
+  const id = c.req.param('id')
+  if (!id) return c.json({ error: 'Missing session id.' }, 400)
+  const owner = await getOwnerId(c)
+  const result = await getSessionMessageCountForOwner(id, owner)
+  if (result.access === 'forbidden') return c.json({ error: '无权访问该会话。' }, 403)
+  if (result.access === 'not_found') return c.json({ error: '会话不存在。' }, 404)
+  return c.json({ count: result.count! } satisfies SessionMessageCountResponse)
+})
 sessionsRouter.patch('/:id', requireAuth, async (c) => { const id=c.req.param('id'); if(!id)return c.json({error:'Missing session id.'},400); const owner=await getOwnerId(c); const e=await access(c,id!,owner!); if(e)return e; const body=await c.req.json<Partial<RenameSessionRequest>>().catch(()=>({} as Partial<RenameSessionRequest>)); const name=typeof body.name==='string'?body.name.trim():''; if(name.length>MAX_SESSION_NAME_LENGTH)return c.json({error:`标题过长，最多 ${MAX_SESSION_NAME_LENGTH} 个字符。`},400); await renameSession(id!,name||null); return c.json({ok:true}) })
 sessionsRouter.delete('/:id', requireAuth, async (c) => { const id=c.req.param('id'); if(!id)return c.json({error:'Missing session id.'},400); const owner=await getOwnerId(c); const e=await access(c,id!,owner!); if(e)return e; if(isRunInProgress(id!))return c.json({error:'该会话有一条消息正在处理中，请稍候再试。'},409); markSessionDeleting(id!); try{await deleteSession(id!)}finally{clearSessionDeleting(id!)} return c.json({ok:true}) })

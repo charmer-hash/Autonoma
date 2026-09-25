@@ -44,6 +44,7 @@ import {
   getPresignedDownloadUrl,
 } from './lib/storage.js'
 import { withRetry } from './lib/retry.js'
+import { pool } from './db/client.js'
 
 const DAILY_COST_LIMIT_USD = Number(process.env.DAILY_COST_LIMIT_USD ?? 5)
 
@@ -224,6 +225,7 @@ app.post('/api/agent/run', requireAuth, async (c) => {
   const requestStartedAt = Date.now()
   const stageLabels: Record<string, string> = {
     daily_cost: '读取每日额度',
+    username_lookup: '读取用户标识',
     settings: '读取 Agent 设置',
     session_access: '检查会话权限',
     history_init: '初始化历史记录',
@@ -245,7 +247,12 @@ app.post('/api/agent/run', requireAuth, async (c) => {
       ok = true
       return result
     } finally {
-      console.info(`[耗时] ${stageLabels[stage] ?? stage} agent.${stage}`, { requestId, durationMs: Date.now() - startedAt, ok })
+      console.info(`[耗时] ${stageLabels[stage] ?? stage} agent.${stage}`, {
+        requestId,
+        durationMs: Date.now() - startedAt,
+        ok,
+        dbPool: { total: pool.totalCount, idle: pool.idleCount, waiting: pool.waitingCount },
+      })
     }
   }
   const requestId = crypto.randomUUID()
@@ -260,7 +267,9 @@ app.post('/api/agent/run', requireAuth, async (c) => {
   const requestedSessionId = typeof body.sessionId === 'string' && body.sessionId ? body.sessionId : undefined
   const ownerId = await getOwnerId(c)
   // 用户名按已验证的 ownerId 缓存，避免每轮增加身份查询。
-  const isAdmin = ownerId ? (await getUsernameById(ownerId).catch(() => undefined)) === 'admin' : false
+  const isAdmin = ownerId
+    ? (await perf('username_lookup', () => getUsernameById(ownerId)).catch(() => undefined)) === 'admin'
+    : false
 
   // 独立读取并行启动。历史中的付费摘要仍要等待额度检查通过。
   const quotaPromise = ownerId && !isAdmin

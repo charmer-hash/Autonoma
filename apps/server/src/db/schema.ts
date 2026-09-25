@@ -54,7 +54,8 @@ export const sessions = pgTable('sessions', {
   name: text('name'),
 }, (table) => ([
   // listSessions 按 ownerId 过滤、按 updatedAt 排序 —— 见 db/sessions.ts。
-  index('sessions_owner_id_idx').on(table.ownerId),
+  // Session list requests filter by owner and sort by recency.
+  index('sessions_owner_id_updated_at_idx').on(table.ownerId, table.updatedAt.desc()),
 ]))
 
 export const messages = pgTable('messages', {
@@ -69,7 +70,8 @@ export const messages = pgTable('messages', {
 }, (table) => ([
   // Postgres 不会为外键列自动建索引 —— loadMessageRows/listSessions 里的相关
   // 子查询都按 session_id 过滤，见 db/sessions.ts。
-  index('messages_session_id_idx').on(table.sessionId),
+  // History reads filter by session, then seek/order by the monotonic message id.
+  index('messages_session_id_id_idx').on(table.sessionId, table.id),
 ]))
 
 // agent 从其沙箱导出的文件（export_artifact 工具）的元数据 ——

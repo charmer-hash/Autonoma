@@ -2,12 +2,33 @@ import type OpenAI from 'openai'
 import { withRetry } from '../../lib/retry.js'
 
 const TAVILY_TIMEOUT_MS = 15_000
+const TAVILY_RESPONSE_MAX_BYTES = 1_000_000
 
-async function tavilyFetch(input: string, init: RequestInit): Promise<Response> {
+async function tavilyFetchJson<T>(input: string, init: RequestInit): Promise<{ response: Response; data?: T }> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), TAVILY_TIMEOUT_MS)
   try {
-    return await fetch(input, { ...init, signal: controller.signal })
+    const response = await fetch(input, { ...init, signal: controller.signal })
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => {})
+      return { response }
+    }
+    const reader = response.body?.getReader()
+    if (!reader) throw new Error('empty response body')
+    const chunks: Uint8Array[] = []
+    let size = 0
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      size += value.byteLength
+      if (size > TAVILY_RESPONSE_MAX_BYTES) {
+        await reader.cancel()
+        throw new Error('Tavily response exceeded size limit')
+      }
+      chunks.push(value)
+    }
+    const body = Buffer.concat(chunks).toString('utf8')
+    return { response, data: JSON.parse(body) as T }
   } finally {
     clearTimeout(timer)
   }
@@ -61,21 +82,24 @@ export const searchToolHandlers: Record<string, (args: unknown) => Promise<strin
     const requestId = crypto.randomUUID()
 
     let res: Response
+    let data: { results?: TavilyResult[] } | undefined
     const requestStartedAt = Date.now()
     try {
-      res = await withRetry(async () => {
+      const result = await withRetry(async () => {
         const startedAt = Date.now()
-        const r = await tavilyFetch('https://api.tavily.com/search', {
+        const result = await tavilyFetchJson<{ results?: TavilyResult[] }>('https://api.tavily.com/search', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ api_key: apiKey, query, max_results: 1 }),
         })
         // 只对服务端/临时性故障重试；4xx（key 错误、请求错误）
         // 重试也不会自愈，所以直接立即报出来，而不是干等着重试。
-        if (!r.ok && r.status >= 500) throw new Error(`search upstream ${r.status}`)
-        console.info('[耗时] Tavily 搜索完成 tavily.search', { durationMs: Date.now() - startedAt, status: r.status })
-        return r
+        if (!result.response.ok && result.response.status >= 500) throw new Error(`search upstream ${result.response.status}`)
+        console.info('[耗时] Tavily 搜索完成 tavily.search', { durationMs: Date.now() - startedAt, status: result.response.status })
+        return result
       })
+      res = result.response
+      data = result.data
     } catch (err) {
       console.error('[耗时] Tavily 搜索失败 tavily.search_failed', {
         requestId,
@@ -90,8 +114,7 @@ export const searchToolHandlers: Record<string, (args: unknown) => Promise<strin
       return JSON.stringify({ error: `搜索失败：${res.status} ${res.statusText}` })
     }
 
-    const data = (await res.json()) as { results?: TavilyResult[] }
-    const results = (data.results ?? []).map((r) => ({
+    const results = (data?.results ?? []).map((r) => ({
       title: r.title,
       url: r.url,
       // 搜索摘要会直接进入下一轮上下文；限制单条长度，避免压缩后
@@ -107,18 +130,21 @@ export const searchToolHandlers: Record<string, (args: unknown) => Promise<strin
     if (!/^https?:\/\//i.test(url)) return JSON.stringify({ error: 'URL 必须以 http:// 或 https:// 开头。' })
     const requestId = crypto.randomUUID()
     let res: Response
+    let data: { results?: Array<{ url?: string; raw_content?: string }> } | undefined
     const requestStartedAt = Date.now()
     try {
-      res = await withRetry(async () => {
+      const result = await withRetry(async () => {
         const startedAt = Date.now()
-        const r = await tavilyFetch('https://api.tavily.com/extract', {
+        const result = await tavilyFetchJson<{ results?: Array<{ url?: string; raw_content?: string }> }>('https://api.tavily.com/extract', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ api_key: apiKey, urls: [url], format: 'markdown' }),
         })
-        if (!r.ok && r.status >= 500) throw new Error(`extract upstream ${r.status}`)
-        console.info('[耗时] Tavily 网页抓取完成 tavily.extract', { durationMs: Date.now() - startedAt, status: r.status })
-        return r
+        if (!result.response.ok && result.response.status >= 500) throw new Error(`extract upstream ${result.response.status}`)
+        console.info('[耗时] Tavily 网页抓取完成 tavily.extract', { durationMs: Date.now() - startedAt, status: result.response.status })
+        return result
       })
+      res = result.response
+      data = result.data
     } catch (err) {
       console.error('[耗时] Tavily 网页抓取失败 tavily.extract_failed', {
         requestId,
@@ -131,8 +157,7 @@ export const searchToolHandlers: Record<string, (args: unknown) => Promise<strin
       console.error('[耗时] Tavily 网页抓取 HTTP 错误 tavily.extract_http_error', { requestId, status: res.status, statusText: res.statusText })
       return JSON.stringify({ error: `网页抓取失败：${res.status} ${res.statusText}` })
     }
-    const data = (await res.json()) as { results?: Array<{ url?: string; raw_content?: string }> }
-    const item = data.results?.[0]
+    const item = data?.results?.[0]
     if (!item?.raw_content) return JSON.stringify({ error: '网页没有返回可读取的正文内容。', url })
     return JSON.stringify({ url: item.url ?? url, content: item.raw_content.slice(0, 50_000) })
   },

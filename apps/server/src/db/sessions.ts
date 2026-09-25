@@ -20,9 +20,9 @@ export async function listSessions(
 
   // preview（第一条用户消息的文本）是靠相关子查询算出来的、不是
   // sessions 表上真实存在的列。
-  const ownerFilter = ownerId ? sql`sessions.owner_id = ${ownerId}` : sql`sessions.owner_id is null`
-  const previewExpr = sql`(select msg.message->>'content' from messages msg
-     where msg.session_id = sessions.id and msg.message->>'role' = 'user'
+  const ownerFilter = ownerId ? sql`s.owner_id = ${ownerId}` : sql`s.owner_id is null`
+  const previewExpr = (sessionRef: string) => sql`(select msg.message->>'content' from messages msg
+     where msg.session_id = ${sql.raw(sessionRef)}.id and msg.message->>'role' = 'user'
      order by msg.id asc limit 1)`
 
   // updated_at 的类型标注是 string，不是 Date——db.execute 是原生驱动
@@ -35,36 +35,47 @@ export async function listSessions(
   // 的那一页行求值这个相关子查询，而不是对这个 owner 名下的每个会话都
   // 算一遍（每算一次都要去 messages 表按 session_id 找第一条用户消息）。
   //
-  // 有搜索词时就没法这么偷懒了——必须先把每一行的 preview 算出来才能
-  // 拿它去做 ilike 过滤，只能退回到"内层子查询先算、外层再过滤"的写法，
-  // 多查 1 条（limit+1）用来判断 hasMore，省一次单独的 COUNT 查询。
+  // 搜索时 preview 必须参与过滤，但只把最多 limit+offset+1 条候选
+  // 留到最终分页，并且只为最终页面计算预览文本。
   const result = trimmedSearch
     ? await withRetry(() =>
         db.execute<Row>(sql`
-          select t.id, t.updated_at, t.name, t.preview from (
-            select
-              sessions.id as id,
-              sessions.updated_at as updated_at,
-              sessions.name as name,
-              ${previewExpr} as preview
-            from sessions
+          with candidates as materialized (
+            select s.id, s.updated_at, s.name
+            from sessions s
             where ${ownerFilter}
-          ) t
-          where t.name ilike ${'%' + trimmedSearch + '%'} or t.preview ilike ${'%' + trimmedSearch + '%'}
-          order by t.updated_at desc
+              and s.name ilike ${'%' + trimmedSearch + '%'}
+            order by s.updated_at desc
+            limit ${limit + offset + 1}
+          ), preview_matches as materialized (
+            select s.id, s.updated_at, s.name
+            from sessions s
+            where ${ownerFilter}
+              and ${previewExpr('s')} ilike ${'%' + trimmedSearch + '%'}
+            order by s.updated_at desc
+            limit ${limit + offset + 1}
+          ), matches as (
+            select id, updated_at, name from candidates
+            union
+            select id, updated_at, name from preview_matches
+          )
+          select m.id, m.updated_at, m.name, ${previewExpr('s')} as preview
+          from matches m
+          join sessions s on s.id = m.id
+          order by m.updated_at desc
           limit ${limit + 1} offset ${offset}
         `),
       )
     : await withRetry(() =>
         db.execute<Row>(sql`
           select
-            sessions.id as id,
-            sessions.updated_at as updated_at,
-            sessions.name as name,
-            ${previewExpr} as preview
-          from sessions
+            s.id as id,
+            s.updated_at as updated_at,
+            s.name as name,
+            ${previewExpr('s')} as preview
+          from sessions s
           where ${ownerFilter}
-          order by sessions.updated_at desc
+          order by s.updated_at desc
           limit ${limit + 1} offset ${offset}
         `),
       )
@@ -174,16 +185,23 @@ export async function initializeSessionForAgent(
   return initial
 }
 
-// 只统计消息数、不取正文——供 GET /api/sessions/:id/messages/count 使用。
-// 调用方必须已经校验过归属（比如先调用 resolveSessionAccess）。跟
-// loadMessageRows 不同，这里不做"会话不存在就创建"的兜底——能查计数
-// 的场景下，调用方发起请求前，客户端本地必然已经有这个 sessionId，
-// 说明会话行早就存在了。
-export async function getSessionMessageCount(sessionId: string): Promise<number> {
-  const rows = await withRetry(() =>
-    db.select({ count: sql<number>`count(*)::int` }).from(messages).where(eq(messages.sessionId, sessionId)),
-  )
-  return rows[0]?.count ?? 0
+// Resolve ownership and count in one round trip for the count endpoint. The
+// previous route performed these two indexed queries sequentially.
+export async function getSessionMessageCountForOwner(
+  sessionId: string,
+  ownerId: string | undefined,
+): Promise<{ access: 'owned' | 'forbidden' | 'not_found'; count?: number }> {
+  const result = await withRetry(() => db.execute<{ owner_id: string | null; count: number }>(sql`
+    select s.owner_id, count(m.id)::int as count
+    from sessions s
+    left join messages m on m.session_id = s.id
+    where s.id = ${sessionId}
+    group by s.id
+  `))
+  const row = result.rows[0]
+  if (!row) return { access: 'not_found' }
+  if (row.owner_id && ownerId && row.owner_id !== ownerId) return { access: 'forbidden' }
+  return { access: 'owned', count: row.count }
 }
 
 // 完整、未压缩的对话历史 —— 供 GET /api/sessions/:id 使用，
@@ -326,7 +344,16 @@ export async function appendMessages(
 ): Promise<void> {
   if (newMessages.length === 0) return
   await withRetry(() =>
-    db.insert(messages).values(newMessages.map((message) => ({ sessionId, message }))),
+    db.execute(sql`
+      with inserted as (
+        insert into messages (session_id, message)
+        select ${sessionId}, value::jsonb
+        from jsonb_array_elements(${JSON.stringify(newMessages)}::jsonb) as value
+        returning session_id
+      )
+      update sessions
+      set updated_at = now()
+      where id = ${sessionId} and exists (select 1 from inserted)
+    `),
   )
-  await withRetry(() => db.update(sessions).set({ updatedAt: new Date() }).where(eq(sessions.id, sessionId)))
 }
