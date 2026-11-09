@@ -187,5 +187,5 @@ export function finishRun(sessionId: string): void {
   // 删掉，否则新一轮还在进行中的事件从此再也发不出去，且没有任何报错。
   setTimeout(() => {
     if (runs.get(sessionId) === run) runs.delete(sessionId)
-  }, FINISHED_RUN_GRACE_MS)
+  }, FINISHED_RUN_GRACE_MS).unref()
 }
