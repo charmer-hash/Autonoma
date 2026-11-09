@@ -3,6 +3,7 @@ import { configureApp } from './app-setup.js'
 import { uploadsRouter, ownsUploadKey } from './routes/uploads.js'
 import { authRouter } from './routes/auth.js'
 import { sessionsRouter } from './routes/sessions.js'
+import { knowledgeRouter } from './routes/knowledge.js'
 import { streamSSE } from 'hono/streaming'
 import { Sandbox } from 'e2b'
 import {
@@ -24,6 +25,7 @@ import {
   waitForFinish,
 } from './agent/active-runs.js'
 import { runAgentLoop } from './agent/loop.js'
+import { formatKnowledgeResult, searchKnowledge } from './knowledge/search.js'
 import { createLazySandbox } from './agent/lazy-sandbox.js'
 import { MAX_VISION_IMAGE_BYTES, type PendingVisionImage } from './agent/tools/vision.js'
 import { getOwnerId, requireAuth } from './auth.js'
@@ -141,11 +143,13 @@ export const app = new Hono()
 
 configureApp(app)
 
+app.get('/', (c) => c.json({ service: 'Autonoma API', health: '/health' }))
 app.get('/health', (c) => c.json({ ok: true }))
 
 app.route('/api/auth', authRouter)
 
 app.route('/api/sessions', sessionsRouter)
+app.route('/api/knowledge', knowledgeRouter)
 
 app.get('/api/sessions/:sessionId/attachments/:filename', requireAuth, async (c) => {
   const sessionId = c.req.param('sessionId')
@@ -257,13 +261,21 @@ app.post('/api/agent/run', requireAuth, async (c) => {
   }
   const requestId = crypto.randomUUID()
   const body = await c.req
-    .json<{ task?: string; sessionId?: string; attachments?: UploadedAttachment[] }>()
-    .catch(() => ({}) as { task?: string; sessionId?: string; attachments?: UploadedAttachment[] })
+    .json<{ task?: string; sessionId?: string; attachments?: UploadedAttachment[]; knowledgeMode?: 'off' | 'auto' | 'required'; knowledgeBaseIds?: string[]; documentIds?: string[] }>()
+    .catch(() => ({}) as { task?: string; sessionId?: string; attachments?: UploadedAttachment[]; knowledgeMode?: 'off' | 'auto' | 'required'; knowledgeBaseIds?: string[]; documentIds?: string[] })
   const task = body.task?.trim()
   if (!task) {
     return c.json({ error: 'Missing "task" in request body.' }, 400)
   }
   const attachments = Array.isArray(body.attachments) ? body.attachments : []
+  if (body.knowledgeMode && !['off', 'auto', 'required'].includes(body.knowledgeMode)) {
+    return c.json({ error: '无效的知识库检索模式。' }, 400)
+  }
+  const explicitKnowledgeRequest = /(?:根据|查找|检索|搜索|参考|从|按照).{0,15}(?:知识库|上传的资料|上传的文档|内部文档|我的文档)|(?:知识库|上传的资料|内部文档).{0,15}(?:找|查|检索)/.test(task)
+  const knowledgeBaseIds = Array.isArray(body.knowledgeBaseIds) ? body.knowledgeBaseIds : undefined
+  const documentIds = Array.isArray(body.documentIds) ? body.documentIds : undefined
+  const knowledgeMode = body.knowledgeMode === 'off' ? 'off' :
+    body.knowledgeMode === 'required' || knowledgeBaseIds?.length || documentIds?.length || explicitKnowledgeRequest ? 'required' : 'auto'
   const requestedSessionId = typeof body.sessionId === 'string' && body.sessionId ? body.sessionId : undefined
   const ownerId = await getOwnerId(c)
   // 用户名按已验证的 ownerId 缓存，避免每轮增加身份查询。
@@ -409,17 +421,41 @@ app.post('/api/agent/run', requireAuth, async (c) => {
       })
 
       try {
-        const turnStart = messages.length
+        let turnStart = messages.length
         const { note: attachmentNote, visionImages } = attachments.length > 0
           ? await perf('attachments', async () => attachFilesToSandbox(await lazySandbox.get(), sessionId, attachments, ownerId))
           : { note: '', visionImages: [] }
         messages.push({ role: 'user', content: task + attachmentNote })
 
         try {
+          if (knowledgeMode === 'required') {
+            const callId = `knowledge_${crypto.randomUUID()}`
+            publish(sessionId, { type: 'tool_call', id: callId, name: 'search_knowledge', args: { query: task } })
+            const retrieval = await searchKnowledge(ownerId, {
+              query: task.slice(0, 500), knowledgeBaseIds, documentIds,
+            })
+            const result = formatKnowledgeResult(retrieval)
+            messages.push({ role: 'assistant', content: null, tool_calls: [{
+              id: callId, type: 'function', function: { name: 'search_knowledge', arguments: JSON.stringify({ query: task }) },
+            }] })
+            messages.push({ role: 'tool', tool_call_id: callId, content: result })
+            await appendMessages(sessionId, messages.slice(turnStart))
+            turnStart = messages.length
+            publish(sessionId, { type: 'tool_result', id: callId, name: 'search_knowledge', result })
+            if (retrieval.sources.length === 0) {
+              const answer = retrieval.status === 'degraded'
+                ? '向量检索暂时不可用，关键词检索也未找到相关资料。现在无法可靠地依据知识库回答。'
+                : '在指定知识库范围内没有找到相关资料，因此无法依据知识库回答这个问题。'
+              messages.push({ role: 'assistant', content: answer })
+              publish(sessionId, { type: 'text_delta', delta: answer })
+              publish(sessionId, { type: 'done' })
+              return
+            }
+          }
           const modelStartedAt = Date.now()
           console.info('[耗时] 即将进入 Agent 主循环 agent.prepared', { requestId, sessionId, runId, durationMs: modelStartedAt - runStartedAt, messageCount: messages.length })
           let firstEvent = true
-          for await (const event of runAgentLoop(messages, lazySandbox.get, sessionId, visionImages, settings, ownerId, () => isRunCancelled(sessionId), getRunSignal(sessionId, runId), runId)) {
+          for await (const event of runAgentLoop(messages, lazySandbox.get, sessionId, visionImages, settings, ownerId, () => isRunCancelled(sessionId), getRunSignal(sessionId, runId), runId, { mode: knowledgeMode, knowledgeBaseIds, documentIds })) {
             if (firstEvent) {
               console.info('[耗时] 首个前端事件 agent.first_event', { requestId, sessionId, runId, eventType: event.type, durationMs: Date.now() - modelStartedAt, sinceRequestMs: Date.now() - runStartedAt })
               firstEvent = false

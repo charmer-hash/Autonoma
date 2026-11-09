@@ -5,12 +5,13 @@ import { searchTools, searchToolHandlers } from './search.js'
 import { documentTools, documentToolHandlers } from './document.js'
 import { createArtifactTools } from './artifact.js'
 import { createVisionTools, type PendingVisionImage } from './vision.js'
+import { formatKnowledgeResult, searchKnowledge } from '../../knowledge/search.js'
 
 export function createTools(
   getSandbox: GetSandbox,
   sessionId: string,
   pendingVisionImages: PendingVisionImage[],
-  opts: { codeExecEnabled: boolean; webSearchEnabled: boolean; visionEnabled: boolean },
+  opts: { codeExecEnabled: boolean; webSearchEnabled: boolean; visionEnabled: boolean; knowledgeMode?: 'off' | 'auto' | 'required'; ownerId?: string; knowledgeBaseIds?: string[]; documentIds?: string[] },
 ): {
   tools: OpenAI.Chat.ChatCompletionTool[]
   toolHandlers: Record<string, (args: unknown) => Promise<string>>
@@ -29,6 +30,10 @@ export function createTools(
       ...documentTools,
       ...(artifactTools?.tools ?? []),
       ...(visionTools?.tools ?? []),
+      ...(opts.knowledgeMode === 'off' ? [] : [{ type: 'function' as const, function: {
+        name: 'search_knowledge', description: '检索用户已上传的私有知识库，返回带文档、页码和引用编号的证据。回答内部资料问题时先调用此工具。',
+        parameters: { type: 'object', properties: { query: { type: 'string', description: '检索问题或关键词' } }, required: ['query'] },
+      } }]),
     ],
     toolHandlers: {
       ...sandboxTools?.toolHandlers,
@@ -36,6 +41,12 @@ export function createTools(
       ...documentToolHandlers,
       ...artifactTools?.toolHandlers,
       ...visionTools?.toolHandlers,
+      ...(opts.knowledgeMode === 'off' ? {} : { search_knowledge: async (args: unknown) => {
+        const query = typeof args === 'object' && args !== null && 'query' in args ? String(args.query) : ''
+        return formatKnowledgeResult(await searchKnowledge(opts.ownerId, {
+          query, knowledgeBaseIds: opts.knowledgeBaseIds, documentIds: opts.documentIds,
+        }))
+      } }),
     },
   }
 }

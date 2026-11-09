@@ -3,6 +3,7 @@ import { FileCode, Search, Terminal } from 'lucide-react'
 import type { ComponentType } from 'react'
 import type { Block } from '@/types/blocks'
 import { JsonFallbackResult } from '@/components/tool-results/JsonFallbackResult'
+import { KnowledgeResult } from '@/components/tool-results/KnowledgeResult'
 import { RunCommandResult } from '@/components/tool-results/RunCommandResult'
 import { WebSearchResult } from '@/components/tool-results/WebSearchResult'
 import { WriteFileResult } from '@/components/tool-results/WriteFileResult'
@@ -15,6 +16,7 @@ export const TOOL_META: Record<string, { icon: typeof Terminal; label: string }>
   write_file: { icon: FileCode, label: '文件' },
   web_search: { icon: Search, label: '搜索' },
   web_fetch: { icon: Search, label: '网页' },
+  search_knowledge: { icon: Search, label: '知识库' },
 }
 
 export function toolSummary(name: string, args: unknown): string {
@@ -22,6 +24,7 @@ export function toolSummary(name: string, args: unknown): string {
   if (name === 'write_file') return String(get(args, 'path', ''))
   if (name === 'web_search') return String(get(args, 'query', ''))
   if (name === 'web_fetch') return String(get(args, 'url', ''))
+  if (name === 'search_knowledge') return String(get(args, 'query', ''))
   return name
 }
 
@@ -31,5 +34,6 @@ export function getToolResultComponent(name: string): ComponentType<ToolResultPr
   if (name === 'run_command') return RunCommandResult
   if (name === 'write_file') return WriteFileResult
   if (name === 'web_search') return WebSearchResult
+  if (name === 'search_knowledge') return KnowledgeResult
   return JsonFallbackResult
 }

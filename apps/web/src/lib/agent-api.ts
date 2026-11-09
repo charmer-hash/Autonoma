@@ -144,10 +144,13 @@ export async function* runAgent(
   attachments?: UploadedAttachment[],
   signal?: AbortSignal,
 ): AsyncGenerator<AgentFrame> {
+  const knowledgeMode = localStorage.getItem('knowledgeMode') ?? 'auto'
+  const selectedBase = localStorage.getItem('knowledgeBaseId')
   const res = await apiFetch('/api/agent/run', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task, sessionId, attachments }),
+    body: JSON.stringify({ task, sessionId, attachments, knowledgeMode,
+      knowledgeBaseIds: selectedBase ? [selectedBase] : undefined }),
     signal,
   })
 
