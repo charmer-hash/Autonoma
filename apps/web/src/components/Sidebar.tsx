@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { useDebounceFn } from 'ahooks'
-import { Check, Loader2, MessagesSquare, Pencil, Plus, Search, Trash2, X } from 'lucide-react'
+import { BookOpen, Check, Loader2, MessagesSquare, Pencil, Plus, Search, Trash2, X } from 'lucide-react'
 import { MAX_SESSION_NAME_LENGTH } from '@autonoma/shared'
 import { Button } from '@autonoma/ui/components/button'
 import { Input } from '@autonoma/ui/components/input'
@@ -30,6 +30,7 @@ export function Sidebar({
   onClose,
   username,
   onOpenSettings,
+  onOpenKnowledge,
   onLogoutClick,
 }: {
   collapsed: boolean
@@ -38,6 +39,7 @@ export function Sidebar({
   onClose: () => void
   username: string | undefined
   onOpenSettings: () => void
+  onOpenKnowledge: () => void
   onLogoutClick: () => void
 }) {
   const sessions = useConsoleStore((s) => s.sessions)
@@ -138,7 +140,23 @@ export function Sidebar({
           <span className="font-semibold whitespace-nowrap">Autonoma</span>
         </div>
 
-        <div className="space-y-2 px-3">
+        <nav aria-label="资料" className="px-3 pb-3">
+          <button
+            type="button"
+            onClick={onOpenKnowledge}
+            className="flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left text-sidebar-foreground outline-none transition-colors hover:bg-sidebar-accent/60 focus-visible:ring-2 focus-visible:ring-sidebar-ring/50"
+          >
+            <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-sidebar-accent text-sidebar-primary">
+              <BookOpen className="size-4" />
+            </span>
+            <span className="min-w-0">
+              <span className="block text-sm font-medium">知识库</span>
+            <span className="block text-xs text-sidebar-foreground/70">管理资料与检索</span>
+            </span>
+          </button>
+        </nav>
+
+        <div className="space-y-2 border-t border-sidebar-border px-3 pt-3">
           <Button
             variant="outline"
             className="w-full justify-start gap-2 text-sidebar-foreground transition-shadow hover:shadow-[0_4px_16px_-8px_color-mix(in_oklch,var(--primary)_45%,transparent)]"
@@ -148,9 +166,8 @@ export function Sidebar({
             <Plus className="size-4" />
             新建会话
           </Button>
-
           <div className="relative">
-            <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-sidebar-foreground/40" />
+            <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-sidebar-foreground/65" />
             <Input
               value={searchInput}
               onChange={(e) => {
@@ -160,13 +177,13 @@ export function Sidebar({
                 debouncedSetSessionSearch(e.target.value)
               }}
               placeholder="搜索会话"
-              className="h-8 border-sidebar-border bg-sidebar-accent/30 pl-8 text-sm text-sidebar-foreground placeholder:text-sidebar-foreground/40"
+              className="h-8 border-sidebar-border bg-sidebar-accent/30 pl-8 text-sm text-sidebar-foreground placeholder:text-sidebar-foreground/65"
             />
           </div>
         </div>
 
         <div className="mt-3 flex-1 overflow-y-auto px-3">
-          <p className="px-1 text-xs font-medium text-sidebar-foreground/50">会话</p>
+          <p className="px-1 text-xs font-medium text-sidebar-foreground/50">历史会话</p>
           {sessionsLoading ? (
             <div className="mt-2 space-y-1">
               {SKELETON_ROWS.map((width, i) => (
@@ -193,7 +210,7 @@ export function Sidebar({
                   {searchInput ? '没有匹配的会话' : '还没有会话'}
                 </p>
                 {!searchInput && (
-                  <p className="text-[11px] leading-relaxed text-sidebar-foreground/40">
+                  <p className="text-xs leading-relaxed text-sidebar-foreground/70">
                     新建一个会话，
                     <br />
                     开始你的第一次对话
@@ -255,7 +272,7 @@ export function Sidebar({
                           )}
                         >
                           <div className="truncate text-sm">{label}</div>
-                          <div className="text-[11px] text-sidebar-foreground/40">{formatRelativeTime(s.updatedAt)}</div>
+                          <div className="text-xs text-sidebar-foreground/70">{formatRelativeTime(s.updatedAt)}</div>
                         </button>
                         {/* 桌面端（md 及以上）默认不可见也不可点——鼠标悬停/键盘聚焦
                             到这一行时才淡入并恢复可点击，跟 ToolCard 的展开按钮同一个

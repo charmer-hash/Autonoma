@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { AgentSettingsDialog } from "@/components/AgentSettingsDialog";
+import { KnowledgeDialog } from "@/components/KnowledgeDialog";
 import { ConfirmLogoutDialog } from "@/components/ConfirmLogoutDialog";
 import { ConsoleHeader } from "@/components/ConsoleHeader";
 import { Composer } from "@/components/Composer";
@@ -30,6 +31,7 @@ export function Console({ username, onLogout }: { username: string | undefined; 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(isMobile);
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const [agentSettingsOpen, setAgentSettingsOpen] = useState(false);
+  const [knowledgeOpen, setKnowledgeOpen] = useState(false);
   const [theme, setTheme] = useState<"light" | "dark">(() =>
     document.documentElement.classList.contains("dark") ? "dark" : "light",
   );
@@ -62,6 +64,10 @@ export function Console({ username, onLogout }: { username: string | undefined; 
         onClose={() => setSidebarCollapsed(true)}
         username={username}
         onOpenSettings={() => setAgentSettingsOpen(true)}
+        onOpenKnowledge={() => {
+          setKnowledgeOpen(true);
+          if (isMobile) setSidebarCollapsed(true);
+        }}
         onLogoutClick={() => setLogoutConfirmOpen(true)}
       />
 
@@ -88,6 +94,7 @@ export function Console({ username, onLogout }: { username: string | undefined; 
       />
 
       <AgentSettingsDialog open={agentSettingsOpen} onClose={() => setAgentSettingsOpen(false)} />
+      <KnowledgeDialog open={knowledgeOpen} onClose={() => setKnowledgeOpen(false)} />
     </div>
   );
 }
