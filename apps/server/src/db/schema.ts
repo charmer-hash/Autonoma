@@ -1,4 +1,4 @@
-import { bigint, bigserial, boolean, index, integer, jsonb, pgTable, real, text, timestamp } from 'drizzle-orm/pg-core'
+import { bigint, bigserial, boolean, index, integer, jsonb, pgTable, real, text, timestamp, uniqueIndex, vector } from 'drizzle-orm/pg-core'
 import type OpenAI from 'openai'
 
 export const users = pgTable('users', {
@@ -140,3 +140,68 @@ export const usageEvents = pgTable('usage_events', {
   // getDailyCostUsd 按 (ownerId, createdAt) 查最近 24 小时花费总和。
   index('usage_events_owner_id_created_at_idx').on(table.ownerId, table.createdAt),
 ]))
+
+export const knowledgeBases = pgTable('knowledge_bases', {
+  id: text('id').primaryKey(),
+  ownerId: text('owner_id').references(() => users.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  description: text('description').notNull().default(''),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [index('knowledge_bases_owner_idx').on(table.ownerId)])
+
+export const knowledgeDocuments = pgTable('knowledge_documents', {
+  id: text('id').primaryKey(),
+  knowledgeBaseId: text('knowledge_base_id').notNull().references(() => knowledgeBases.id, { onDelete: 'cascade' }),
+  filename: text('filename').notNull(),
+  mimeType: text('mime_type').notNull(),
+  sizeBytes: integer('size_bytes').notNull(),
+  sha256: text('sha256').notNull(),
+  currentR2Key: text('current_r2_key'),
+  pendingR2Key: text('pending_r2_key'),
+  pendingFilename: text('pending_filename'),
+  pendingMimeType: text('pending_mime_type'),
+  pendingSizeBytes: integer('pending_size_bytes'),
+  pendingSha256: text('pending_sha256'),
+  currentVersion: integer('current_version').notNull().default(0),
+  pendingVersion: integer('pending_version'),
+  status: text('status').notNull().default('queued'),
+  errorMessage: text('error_message'),
+  chunkCount: integer('chunk_count').notNull().default(0),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index('knowledge_documents_base_idx').on(table.knowledgeBaseId),
+  index('knowledge_documents_hash_idx').on(table.knowledgeBaseId, table.sha256),
+])
+
+export const knowledgeChunks = pgTable('knowledge_chunks', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  documentId: text('document_id').notNull().references(() => knowledgeDocuments.id, { onDelete: 'cascade' }),
+  documentVersion: integer('document_version').notNull(),
+  ordinal: integer('ordinal').notNull(),
+  pageNumber: integer('page_number'),
+  headingPath: text('heading_path'),
+  startOffset: integer('start_offset').notNull(),
+  endOffset: integer('end_offset').notNull(),
+  content: text('content').notNull(),
+  embedding: vector('embedding', { dimensions: 1024 }).notNull(),
+}, (table) => [
+  uniqueIndex('knowledge_chunks_document_ordinal_idx').on(table.documentId, table.documentVersion, table.ordinal),
+  index('knowledge_chunks_document_idx').on(table.documentId, table.documentVersion),
+])
+
+export const knowledgeJobs = pgTable('knowledge_jobs', {
+  id: text('id').primaryKey(),
+  documentId: text('document_id').notNull().references(() => knowledgeDocuments.id, { onDelete: 'cascade' }),
+  documentVersion: integer('document_version').notNull(),
+  status: text('status').notNull().default('queued'),
+  attempts: integer('attempts').notNull().default(0),
+  leaseUntil: timestamp('lease_until', { withTimezone: true }),
+  lastError: text('last_error'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex('knowledge_jobs_document_version_idx').on(table.documentId, table.documentVersion),
+  index('knowledge_jobs_claim_idx').on(table.status, table.leaseUntil),
+])

@@ -8,6 +8,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node --env-file-if-exists=.env dist/server.js",
     "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test tests/*.test.ts",
     "lint": "echo \"no lint configured\"",
     "db:generate": "drizzle-kit generate",
     "create-user": "tsx --env-file=.env scripts/create-user.ts",
@@ -21,7 +22,10 @@
     "drizzle-orm": "^0.45.2",
     "e2b": "^2.36.0",
     "hono": "^4.6.14",
+    "htmlparser2": "^12.0.0",
+    "mammoth": "1.13.0",
     "openai": "^6.49.0",
+    "pdfjs-dist": "5.4.296",
     "pg": "^8.22.0"
   },
   "devDependencies": {

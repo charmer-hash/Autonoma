@@ -4,5 +4,6 @@ dist
 .env.*
 !.env.example
 .turbo
+.pnpm-store/
 *.tsbuildinfo
 .DS_Store

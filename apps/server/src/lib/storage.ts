@@ -2,6 +2,7 @@ import {
   AbortMultipartUploadCommand,
   CompleteMultipartUploadCommand,
   CreateMultipartUploadCommand,
+  DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
   PutObjectCommand,
@@ -43,6 +44,10 @@ export async function uploadArtifact(key: string, bytes: Uint8Array, mimeType: s
   await getClient().send(
     new PutObjectCommand({ Bucket: getBucket(), Key: key, Body: bytes, ContentType: mimeType }),
   )
+}
+
+export async function deleteObject(key: string): Promise<void> {
+  await getClient().send(new DeleteObjectCommand({ Bucket: getBucket(), Key: key }))
 }
 
 // 把一个已上传的文件直接从 R2 流式传输进沙箱文件系统
