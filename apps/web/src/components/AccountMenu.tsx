@@ -110,7 +110,7 @@ export function AccountMenu({
           {initial}
         </span>
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-sidebar-foreground">{displayName}</span>
-        <ChevronsUpDown className="size-3.5 shrink-0 text-sidebar-foreground/40" />
+        <ChevronsUpDown className="size-3.5 shrink-0 text-sidebar-foreground/65" />
       </button>
     </div>
   )

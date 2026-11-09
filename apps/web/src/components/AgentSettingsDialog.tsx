@@ -28,7 +28,7 @@ function SettingsSkeleton() {
   return (
     <div className="animate-pulse space-y-4">
       <div className="h-32 rounded-lg bg-muted" />
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div className="h-16 rounded-lg bg-muted" />
         <div className="h-16 rounded-lg bg-muted" />
       </div>
@@ -37,7 +37,7 @@ function SettingsSkeleton() {
         <div className="h-3.5 w-24 rounded-full bg-muted" />
         <div className="h-3.5 w-20 rounded-full bg-muted" />
       </div>
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div className="h-16 rounded-lg bg-muted" />
         <div className="h-16 rounded-lg bg-muted" />
       </div>
@@ -174,7 +174,7 @@ export function AgentSettingsDialog({ open, onClose }: { open: boolean; onClose:
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="space-y-1.5">
               <span className="text-xs font-medium text-muted-foreground">审批模式</span>
               <div className="flex flex-col gap-0.5">
@@ -252,7 +252,7 @@ export function AgentSettingsDialog({ open, onClose }: { open: boolean; onClose:
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="space-y-1.5">
               <label htmlFor="agent-model-choice" className="text-xs font-medium text-muted-foreground">
                 模型

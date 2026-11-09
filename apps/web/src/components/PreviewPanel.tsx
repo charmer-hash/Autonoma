@@ -10,10 +10,8 @@ import { usePanelStore } from '@/store/panelStore'
 import { FilePreview } from './file-preview/FilePreview'
 import { Markdown } from './Markdown'
 
-// 几乎完全镜像了 Sidebar.tsx 的双模式 CSS，只是镜像到了右侧：
-// 移动端是通过 translate-x 滑入的固定定位抽屉（下方内容不会重排）；
-// 桌面端（md 及以上）则回到文档流内的面板，通过 *宽度* 变化来推动
-// 聊天列，而不是遮盖它。
+// 中小屏幕使用覆盖式面板，避免侧边栏和预览面板同时挤占聊天区；
+// 只有 2xl 及以上宽度才让预览面板进入文档流。
 const EASE = 'ease-[cubic-bezier(0.16,1,0.3,1)]'
 // 440px 对文档/代码/表格这类内容来说偏窄——参考 Claude.ai/ChatGPT 这类
 // 产品的画布式侧栏，随视口变宽而分级加宽，大屏幕上不会显得比聊天列
@@ -59,27 +57,24 @@ export function PreviewPanel() {
 
   return (
     <>
-      {/* 仅移动端使用的遮罩层，处理方式与 Sidebar 的背景遮罩相同——始终
+      {/* 覆盖模式的遮罩层，处理方式与 Sidebar 的背景遮罩相同——始终
           挂载，这样关闭时也能播放淡出动画，而不是只有打开时才有效果。 */}
       <div
         aria-hidden
         onClick={close}
         className={cn(
-          `fixed inset-0 z-30 bg-black/40 transition-opacity duration-300 md:hidden ${EASE}`,
+          `fixed inset-0 z-30 bg-black/40 transition-opacity duration-300 2xl:hidden ${EASE}`,
           collapsed ? 'pointer-events-none opacity-0' : 'opacity-100',
         )}
       />
       <aside
         className={cn(
           `flex shrink-0 flex-col overflow-hidden border-l bg-card text-foreground transition-transform duration-300 ${EASE}`,
-          // max-w-md 是给移动端 w-[88vw] 兜底用的，没有 md: 前缀所以本来
-          // 会一直生效——桌面端 PANEL_WIDTH 想要的宽度只要超过 28rem
-          // （448px）就会被这个上限悄悄截断，440px 的旧值恰好压线没触发。
-          // md:max-w-none 让桌面端的宽度完全由 PANEL_WIDTH 决定。
+          // 小屏幕宽度受视口限制；从 md 起采用固定面板宽度。
           'fixed inset-y-0 right-0 z-40 w-[88vw] max-w-md md:max-w-none',
           collapsed ? 'translate-x-full' : 'translate-x-0',
-          `md:static md:z-auto md:translate-x-0 md:transition-[width] md:duration-300 ${EASE}`,
-          collapsed ? 'md:w-0 md:border-l-0' : PANEL_WIDTH,
+          `2xl:static 2xl:z-auto 2xl:translate-x-0 2xl:transition-[width] 2xl:duration-300 ${EASE}`,
+          collapsed ? '2xl:w-0 2xl:border-l-0' : PANEL_WIDTH,
         )}
       >
         <div className="flex min-w-0 items-center gap-2 border-b px-4 py-3">
