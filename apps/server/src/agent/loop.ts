@@ -1,4 +1,5 @@
 import type OpenAI from 'openai'
+import * as Sentry from '@sentry/hono/node'
 import type { GetSandbox } from './lazy-sandbox.js'
 import { createTools } from './tools/index.js'
 import { client, VISION_MODEL, resolveModel } from './client.js'
@@ -539,6 +540,7 @@ export async function* runAgentLoop(
 
     yield { type: 'error', message: `Stopped after ${settings.maxTurns} turns without finishing.` }
   } catch (err) {
+    Sentry.captureException(err)
     yield { type: 'error', message: err instanceof Error ? err.message : String(err) }
   }
 }

@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { logger } from 'hono/logger'
+import { sentry } from '@sentry/hono/node'
 import { isProd } from './auth.js'
 
 /** Configure process-wide middleware shared by all HTTP routes. */
@@ -10,6 +11,7 @@ export function configureApp(app: Hono): void {
     throw new Error('CORS_ORIGIN 未设置——生产环境必须显式配置允许的跨域来源，而不是回退到会静默破坏所有登录态请求的通配符。')
   }
 
+  if (process.env.SENTRY_DSN) app.use('*', sentry(app))
   app.use('*', logger())
   app.use('*', cors({ origin: corsOrigin ?? '*', credentials: true }))
   app.use('*', async (c, next) => {

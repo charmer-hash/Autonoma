@@ -54,6 +54,17 @@ pnpm dev   # 通过 turbo 同时跑 apps/web（5173）和 apps/server（8787）
    `AUTH_SESSION_SECRET`、`R2_ACCOUNT_ID`、`R2_ACCESS_KEY_ID`、
    `R2_SECRET_ACCESS_KEY`、`R2_BUCKET`。`PORT` 由 Railway 自动设置。
 
+### 错误监控 —— Sentry
+
+在 [Sentry](https://sentry.io/) 的免费计划中创建两个项目：前端选 React，服务端选 Hono（Node.js）。分别复制项目的 DSN：
+
+- Cloudflare Pages 构建环境变量设置 `VITE_SENTRY_DSN`，然后重新构建前端。Vite 会在构建时把 DSN 编入客户端代码，DSN 是公开标识，不是密钥。
+- Railway 服务变量设置 `SENTRY_DSN`，然后重新部署服务端；可选设置 `SENTRY_ENVIRONMENT=production`。
+
+不填 DSN 时不向 Sentry 发送事件。当前只启用错误监控，不采集性能追踪、会话回放或日志；请求体、Cookie、请求头、查询参数和用户信息等自动采集已关闭。浏览器端会记录未捕获异常和 React 渲染异常；服务端会记录 Hono 请求异常及 Agent、知识库任务中已捕获的关键异常。
+
+验证时，在已配置 DSN 的网页控制台执行 `setTimeout(() => { throw new Error('Sentry browser smoke test') }, 0)`，然后去前端项目的 Issues 查看；服务端可在 `apps/server` 目录执行 `node --env-file-if-exists=.env --import ./dist/instrument.js -e "import('@sentry/hono/node').then(async Sentry => { Sentry.captureException(new Error('Sentry server smoke test')); await Sentry.flush(2000) })"`，再去服务端项目的 Issues 查看。后者需要先构建，且执行环境中有 `SENTRY_DSN`。
+
 ### 数据库 —— Neon
 
 在 Neon 创建一个 Postgres 项目，把连接串复制到服务端的

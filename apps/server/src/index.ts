@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import * as Sentry from '@sentry/hono/node'
 import { configureApp } from './app-setup.js'
 import { uploadsRouter, ownsUploadKey } from './routes/uploads.js'
 import { authRouter } from './routes/auth.js'
@@ -345,6 +346,7 @@ app.post('/api/agent/run', requireAuth, async (c) => {
     await waitForContextMessages()
     await cleanupPreparation()
     const failure = [quotaResult, contextResult].find((result) => result.status === 'rejected')
+    if (failure?.status === 'rejected') Sentry.captureException(failure.reason)
     console.error('agent preparation failed:', failure)
     return c.json({ error: '会话准备失败，请稍后重试。' }, 500)
   }
@@ -472,6 +474,7 @@ app.post('/api/agent/run', requireAuth, async (c) => {
           )
         }
       } catch (err) {
+        Sentry.captureException(err)
         console.error(err)
         await sendError(err instanceof Error ? err.message : String(err))
       } finally {

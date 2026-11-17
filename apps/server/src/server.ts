@@ -1,3 +1,4 @@
+import './instrument.js'
 import { serve } from '@hono/node-server'
 import { app } from './index.js'
 import { runMigrations } from './db/migrate.js'

@@ -19,6 +19,8 @@
     "@aws-sdk/client-s3": "^3.1101.0",
     "@aws-sdk/s3-request-presigner": "^3.1101.0",
     "@hono/node-server": "^1.13.7",
+    "@sentry/hono": "^11.13.0",
+    "@sentry/node": "^11.13.0",
     "drizzle-orm": "^0.45.2",
     "e2b": "^2.36.0",
     "hono": "^4.6.14",

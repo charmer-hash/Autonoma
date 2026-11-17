@@ -1,4 +1,5 @@
 import { and, eq } from 'drizzle-orm'
+import * as Sentry from '@sentry/hono/node'
 import { pool } from '../db/client.js'
 import { deleteObject, getObjectBytes, getObjectSize } from '../lib/storage.js'
 import { chunkSections } from './chunk.js'
@@ -66,6 +67,7 @@ async function processJob(job: ClaimedJob): Promise<void> {
       await deleteObject(previousR2Key).catch((err) => console.error('knowledge previous-version cleanup failed:', err))
     }
   } catch (err) {
+    Sentry.captureException(err)
     const message = err instanceof Error ? err.message : String(err)
     console.error('knowledge indexing failed:', { documentId: doc.id, version: job.document_version, error: message })
     await db.transaction(async (tx) => {
@@ -88,6 +90,7 @@ export function startKnowledgeWorker(): () => Promise<void> {
       const job = await claimJob()
       if (job) await processJob(job)
     } catch (err) {
+      Sentry.captureException(err)
       console.error('knowledge worker failed:', err)
     } finally {
       busy = false
