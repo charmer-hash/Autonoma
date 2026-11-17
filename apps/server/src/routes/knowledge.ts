@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import * as Sentry from '@sentry/hono/node'
+import type { ApiEnv } from '../app-setup.js'
 import { getOwnerId, requireAuth } from '../auth.js'
 import { searchKnowledge } from '../knowledge/search.js'
 import {
@@ -8,12 +9,14 @@ import {
   replaceKnowledgeDocument, reindexKnowledgeDocument, retryKnowledgeDocument,
 } from '../knowledge/store.js'
 
-export const knowledgeRouter = new Hono()
+export const knowledgeRouter = new Hono<ApiEnv>()
 knowledgeRouter.use('*', requireAuth)
 knowledgeRouter.onError((err, c) => {
   if (err instanceof KnowledgeError) return c.json({ error: err.message }, err.status)
   Sentry.captureException(err)
   console.error('knowledge API failed:', err)
+  c.set('sentryResponseError', '知识库请求失败，请稍后重试。')
+  c.set('sentryFailureType', err.name)
   return c.json({ error: '知识库请求失败，请稍后重试。' }, 500)
 })
 

@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import * as Sentry from '@sentry/hono/node'
-import { configureApp } from './app-setup.js'
+import { configureApp, type ApiEnv } from './app-setup.js'
 import { uploadsRouter, ownsUploadKey } from './routes/uploads.js'
 import { authRouter } from './routes/auth.js'
 import { sessionsRouter } from './routes/sessions.js'
@@ -140,7 +140,7 @@ async function attachFilesToSandbox(
   return { note, visionImages }
 }
 
-export const app = new Hono()
+export const app = new Hono<ApiEnv>()
 
 configureApp(app)
 
@@ -348,6 +348,8 @@ app.post('/api/agent/run', requireAuth, async (c) => {
     const failure = [quotaResult, contextResult].find((result) => result.status === 'rejected')
     if (failure?.status === 'rejected') Sentry.captureException(failure.reason)
     console.error('agent preparation failed:', failure)
+    c.set('sentryResponseError', '会话准备失败，请稍后重试。')
+    c.set('sentryFailureType', failure?.status === 'rejected' && failure.reason instanceof Error ? failure.reason.name : 'PreparationError')
     return c.json({ error: '会话准备失败，请稍后重试。' }, 500)
   }
   const context = contextResult.value
